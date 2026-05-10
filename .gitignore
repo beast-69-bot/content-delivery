@@ -1,0 +1,12 @@
+venv/
+.venv/
+logs/
+bot/.env
+bot/logs/
+bot/shopbot.db
+bot/pytest_out.txt
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
