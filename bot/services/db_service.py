@@ -565,6 +565,7 @@ async def update_order_status(order_id: str, status: OrderStatus, **kwargs) -> b
 
 
 async def submit_screenshot(order_id: str, file_id: str) -> bool:
+    await get_db().payment_admin_messages.delete_many({"order_id": order_id})
     return await update_order_status(order_id, OrderStatus.submitted, screenshot_file_id=file_id)
 
 
@@ -609,6 +610,41 @@ async def save_customer_bot(order_id: str, token: str, username: str) -> bool:
         customer_bot_username=username,
         requirements_received=True,
     )
+
+
+async def add_payment_admin_message(order_id: str, chat_id: int, message_id: int, message_type: str) -> None:
+    await get_db().payment_admin_messages.update_one(
+        {"order_id": order_id, "chat_id": int(chat_id), "message_id": int(message_id)},
+        {
+            "$set": {
+                "message_type": message_type,
+                "updated_at": _utc_now_naive(),
+            },
+            "$setOnInsert": {
+                "order_id": order_id,
+                "chat_id": int(chat_id),
+                "message_id": int(message_id),
+                "created_at": _utc_now_naive(),
+            },
+        },
+        upsert=True,
+    )
+
+
+async def get_payment_admin_messages(order_id: str) -> list[dict]:
+    docs = await get_db().payment_admin_messages.find({"order_id": order_id}).to_list(length=None)
+    return [
+        {
+            "chat_id": int(doc["chat_id"]),
+            "message_id": int(doc["message_id"]),
+            "message_type": doc.get("message_type", "text"),
+        }
+        for doc in docs
+    ]
+
+
+async def clear_payment_admin_messages(order_id: str) -> None:
+    await get_db().payment_admin_messages.delete_many({"order_id": order_id})
 
 
 async def set_order_channel_message_id(order_id: str, message_id: int | None) -> bool:

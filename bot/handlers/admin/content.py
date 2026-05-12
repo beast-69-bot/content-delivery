@@ -3,7 +3,8 @@ import logging
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from keyboards.keyboards import back_to_admin_kb
 from middlewares.role_filter import ProductAdminFilter
@@ -12,6 +13,15 @@ from states.states import AddContentStates
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+def _category_kb(categories: list[str]):
+    builder = InlineKeyboardBuilder()
+    for index, category in enumerate(categories):
+        builder.button(text=category, callback_data=f"addcontent:category:{index}")
+    builder.button(text="Add New Category", callback_data="addcontent:category:new")
+    builder.adjust(1)
+    return builder.as_markup()
 
 
 def _delivery_item_from_message(message: Message) -> dict:
@@ -48,14 +58,35 @@ def _delivery_item_from_message(message: Message) -> dict:
 @router.message(Command("addcontent"), ProductAdminFilter())
 async def cmd_add_content(message: Message, state: FSMContext):
     categories = await get_categories()
-    category_text = "\n".join(f"- {category}" for category in categories) or "- No categories yet"
     await state.set_state(AddContentStates.category)
+    await state.update_data(category_options=categories)
     await message.answer(
         "<b>Add Content</b>\n\n"
-        "Existing categories:\n"
-        f"{category_text}\n\n"
-        "Send existing category name or send a new category name:"
+        "Choose an existing category or add a new one:",
+        reply_markup=_category_kb(categories),
     )
+
+
+@router.callback_query(F.data.startswith("addcontent:category:"), AddContentStates.category, ProductAdminFilter())
+async def add_content_category_button(callback: CallbackQuery, state: FSMContext):
+    choice = callback.data.rsplit(":", 1)[1]
+    if choice == "new":
+        await callback.message.answer("Send new category name:")
+        await callback.answer()
+        return
+
+    data = await state.get_data()
+    categories = list(data.get("category_options") or [])
+    try:
+        category = categories[int(choice)]
+    except (ValueError, IndexError):
+        await callback.answer("Category selection expired. Send /addcontent again.", show_alert=True)
+        return
+
+    await state.update_data(category=category)
+    await state.set_state(AddContentStates.subcategory)
+    await callback.message.answer(f"Category selected: <b>{category}</b>\n\nSend subcategory/chapter name:")
+    await callback.answer()
 
 
 @router.message(AddContentStates.category, ProductAdminFilter())

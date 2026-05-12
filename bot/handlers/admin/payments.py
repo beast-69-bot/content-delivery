@@ -4,25 +4,84 @@ Payment admin: approve or reject payment screenshots.
 """
 
 import logging
+
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from database.models import AdminRole, OrderStatus
 from keyboards.keyboards import (
-    admin_panel_kb, back_to_admin_kb, payment_verify_kb,
-    ApprovePaymentCD, RejectPaymentCD, ViewPaymentCD
+    ApprovePaymentCD,
+    RejectPaymentCD,
+    ViewPaymentCD,
+    back_to_admin_kb,
+    confirm_deliver_kb,
+    payment_verify_kb,
 )
 from middlewares.role_filter import PaymentAdminFilter
-from services.order_feed_service import sync_order_feed
 from services.db_service import (
-    approve_payment, get_order, get_orders_by_status,
-    log_action, reject_payment,
+    add_payment_admin_message,
+    approve_payment,
+    clear_payment_admin_messages,
+    get_admins_by_role,
+    get_order,
+    get_orders_by_status,
+    get_payment_admin_messages,
+    log_action,
+    reject_payment,
 )
-from database.models import OrderStatus
+from services.order_feed_service import sync_order_feed
 from states.states import RejectPaymentStates
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+def _payment_review_text(order) -> str:
+    username = order.user.username or order.user.full_name
+    return (
+        "<b>Payment Review</b>\n\n"
+        f"User: @{username} (<code>{order.user_id}</code>)\n"
+        f"Order: <b>#{order.order_id}</b>\n"
+        f"Product: {order.product_name}\n"
+        f"Plan: {order.plan_name}\n"
+        f"Amount: <b>Rs {order.amount:.0f}</b>"
+    )
+
+
+def _payment_processed_text(order, actor_label: str, approved: bool, reason: str | None = None) -> str:
+    status = "APPROVED" if approved else "REJECTED"
+    text = (
+        f"{_payment_review_text(order)}\n\n"
+        f"<b>{status}</b>\n"
+        f"By: <b>{actor_label}</b>"
+    )
+    if reason:
+        text += f"\nReason: {reason}"
+    return text
+
+
+async def _edit_payment_admin_messages(bot: Bot, order, text: str) -> None:
+    messages = await get_payment_admin_messages(order.order_id)
+    for item in messages:
+        try:
+            if item.get("message_type") == "photo":
+                await bot.edit_message_caption(
+                    chat_id=item["chat_id"],
+                    message_id=item["message_id"],
+                    caption=text,
+                    reply_markup=None,
+                )
+            else:
+                await bot.edit_message_text(
+                    chat_id=item["chat_id"],
+                    message_id=item["message_id"],
+                    text=text,
+                    reply_markup=None,
+                )
+        except Exception as e:
+            logger.warning("Could not update payment admin message %s: %s", item, e)
 
 
 @router.callback_query(F.data == "admin:payments", PaymentAdminFilter())
@@ -30,30 +89,29 @@ async def cb_payments_menu(callback: CallbackQuery):
     try:
         orders, total = await get_orders_by_status(OrderStatus.submitted)
     except Exception as e:
-        logger.error(f"Error fetching payments: {e}")
-        await callback.answer("⚠️ Something went wrong. Please try again or contact support.", show_alert=True)
+        logger.error("Error fetching payments: %s", e)
+        await callback.answer("Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     if not orders:
         await callback.message.edit_text(
-            "💳 <b>Payments</b>\n\n✅ No pending verifications.",
+            "<b>Payments</b>\n\nNo pending verifications.",
             reply_markup=back_to_admin_kb(),
         )
         await callback.answer()
         return
 
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
-    for o in orders:
+    for order in orders:
         builder.button(
-            text=f"#{o.order_id} — ₹{o.amount:.0f} — {o.product_name[:20]}",
-            callback_data=ViewPaymentCD(order_id=o.order_id).pack(),
+            text=f"#{order.order_id} - Rs {order.amount:.0f} - {order.product_name[:20]}",
+            callback_data=ViewPaymentCD(order_id=order.order_id).pack(),
         )
-    builder.button(text="◀️ Admin Panel", callback_data="admin:panel")
+    builder.button(text="Admin Panel", callback_data="admin:panel")
     builder.adjust(1)
 
     await callback.message.edit_text(
-        f"💳 <b>Pending Verifications</b> ({total})\n\nSelect to review:",
+        f"<b>Pending Verifications</b> ({total})\n\nSelect to review:",
         reply_markup=builder.as_markup(),
     )
     await callback.answer()
@@ -62,43 +120,32 @@ async def cb_payments_menu(callback: CallbackQuery):
 @router.callback_query(ViewPaymentCD.filter(), PaymentAdminFilter())
 async def cb_view_payment(callback: CallbackQuery, callback_data: ViewPaymentCD, bot: Bot):
     try:
-        order_id = callback_data.order_id
-        order = await get_order(order_id)
+        order = await get_order(callback_data.order_id)
     except Exception as e:
-        logger.error(f"Error viewing payment: {e}")
-        await callback.answer("⚠️ Something went wrong. Please try again or contact support.", show_alert=True)
+        logger.error("Error viewing payment: %s", e)
+        await callback.answer("Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     if not order or order.status != OrderStatus.submitted:
         await callback.answer("Order not available.", show_alert=True)
         return
 
-    username = order.user.username or order.user.full_name
-    text = (
-        f"💳 <b>Payment Review</b>\n\n"
-        f"👤 User:    @{username}\n"
-        f"🆔 Order:   #{order.order_id}\n"
-        f"📦 Product: {order.product_name}\n"
-        f"📋 Plan:    {order.plan_name}\n"
-        f"💰 Amount:  ₹{order.amount:.0f}"
-    )
+    text = _payment_review_text(order)
     kb = payment_verify_kb(order.order_id)
 
-    # Send screenshot to this admin
     if order.screenshot_file_id:
-        await bot.send_photo(
+        sent = await bot.send_photo(
             chat_id=callback.from_user.id,
             photo=order.screenshot_file_id,
             caption=text,
             reply_markup=kb,
         )
-        await callback.answer()
+        await add_payment_admin_message(order.order_id, callback.from_user.id, sent.message_id, "photo")
     else:
         await callback.message.edit_text(text, reply_markup=kb)
-        await callback.answer()
+        await add_payment_admin_message(order.order_id, callback.from_user.id, callback.message.message_id, "text")
+    await callback.answer()
 
-
-# ── Approve ───────────────────────────────────────────────────────────────────
 
 @router.callback_query(ApprovePaymentCD.filter(), PaymentAdminFilter())
 async def cb_approve_payment(
@@ -110,7 +157,6 @@ async def cb_approve_payment(
     try:
         order_id = callback_data.order_id
         order = await get_order(order_id)
-
         if not order or order.status != OrderStatus.submitted:
             await callback.answer("Order already processed.", show_alert=True)
             return
@@ -118,55 +164,42 @@ async def cb_approve_payment(
         await approve_payment(order_id, callback.from_user.id)
         await log_action(callback.from_user.id, "approve_payment", order_id)
     except Exception as e:
-        logger.error(f"Error approving payment: {e}")
-        await callback.answer("⚠️ Something went wrong. Please try again or contact support.", show_alert=True)
+        logger.error("Error approving payment: %s", e)
+        await callback.answer("Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
-    # Update admin message
-    await callback.message.edit_caption(
-        caption=callback.message.caption + "\n\n✅ <b>APPROVED</b>",
-        reply_markup=None,
-    ) if callback.message.caption else await callback.message.edit_text(
-        callback.message.text + "\n\n✅ <b>APPROVED</b>",
-        reply_markup=None,
+    actor_label = callback.from_user.username or callback.from_user.full_name or str(callback.from_user.id)
+    await _edit_payment_admin_messages(
+        bot,
+        order,
+        _payment_processed_text(order, actor_label, approved=True),
     )
+    await clear_payment_admin_messages(order_id)
 
     from handlers.user.payment import _handle_post_payment_confirmation
 
     await _handle_post_payment_confirmation(bot, order_id, dispatcher)
-
-    await _notify_payment_admins_status(
-        bot=bot,
-        order=order,
-        actor_id=callback.from_user.id,
-        actor_label=callback.from_user.username or callback.from_user.full_name,
-        approved=True,
-    )
-
-    await callback.answer("✅ Payment approved!", show_alert=True)
+    await callback.answer("Payment approved.", show_alert=True)
 
 
 async def _notify_order_admins(bot: Bot, order):
-    from services.db_service import get_admins_by_role
-    from database.models import AdminRole
-    from keyboards.keyboards import confirm_deliver_kb
-
     admins = await get_admins_by_role(AdminRole.order_admin, AdminRole.super_admin, AdminRole.owner)
     text = (
-        f"📬 <b>New Order Ready to Deliver</b>\n\n"
-        f"🆔 Order:   #{order.order_id}\n"
-        f"📦 Product: {order.product_name}\n"
-        f"📋 Plan:    {order.plan_name}\n"
-        f"💰 Amount:  ₹{order.amount:.0f}"
+        "<b>New Order Ready to Deliver</b>\n\n"
+        f"Order: #{order.order_id}\n"
+        f"Product: {order.product_name}\n"
+        f"Plan: {order.plan_name}\n"
+        f"Amount: Rs {order.amount:.0f}"
     )
     if order.customer_requirements_response:
-        text += f"\n\n📝 <b>User Details:</b>\n{order.customer_requirements_response}"
+        text += f"\n\n<b>User Details:</b>\n{order.customer_requirements_response}"
+
     kb = confirm_deliver_kb(order.order_id)
     for admin in admins:
         try:
             await bot.send_message(chat_id=admin.id, text=text, reply_markup=kb)
         except Exception as e:
-            logger.warning(f"Could not notify order admin {admin.id}: {e}")
+            logger.warning("Could not notify order admin %s: %s", admin.id, e)
 
 
 async def _notify_payment_admins_status(
@@ -177,18 +210,15 @@ async def _notify_payment_admins_status(
     approved: bool,
     reason: str | None = None,
 ):
-    from services.db_service import get_admins_by_role
-    from database.models import AdminRole
-
     admins = await get_admins_by_role(AdminRole.payment_admin, AdminRole.super_admin, AdminRole.owner)
     status_text = "APPROVED" if approved else "REJECTED"
     actor_display = actor_label or str(actor_id)
     text = (
-        f"🔄 <b>Payment Update</b>\n\n"
+        "<b>Payment Update</b>\n\n"
         f"Order: <b>#{order.order_id}</b>\n"
         f"Product: {order.product_name}\n"
         f"Plan: {order.plan_name}\n"
-        f"Amount: ₹{order.amount:.0f}\n"
+        f"Amount: Rs {order.amount:.0f}\n"
         f"Status: <b>{status_text}</b>\n"
         f"By: <b>{actor_display}</b>"
     )
@@ -201,20 +231,17 @@ async def _notify_payment_admins_status(
         try:
             await bot.send_message(chat_id=admin.id, text=text)
         except Exception as e:
-            logger.warning(f"Could not notify payment admin {admin.id}: {e}")
+            logger.warning("Could not notify payment admin %s: %s", admin.id, e)
 
-
-# ── Reject ────────────────────────────────────────────────────────────────────
 
 @router.callback_query(RejectPaymentCD.filter(), PaymentAdminFilter())
 async def cb_reject_payment(callback: CallbackQuery, callback_data: RejectPaymentCD, state: FSMContext):
-    order_id = callback_data.order_id
     await state.set_state(RejectPaymentStates.waiting_reason)
-    await state.update_data(order_id=order_id, msg_id=callback.message.message_id)
+    await state.update_data(order_id=callback_data.order_id)
     await callback.message.answer(
-        f"❌ <b>Reject Payment</b>\n\n"
-        f"Order: #{order_id}\n\n"
-        f"Please type the reason for rejection:"
+        f"<b>Reject Payment</b>\n\n"
+        f"Order: #{callback_data.order_id}\n\n"
+        "Please type the reason for rejection:"
     )
     await callback.answer()
 
@@ -234,36 +261,35 @@ async def handle_reject_reason(message: Message, state: FSMContext, bot: Bot):
         await reject_payment(order_id, message.from_user.id, reason)
         await log_action(message.from_user.id, "reject_payment", order_id, reason)
     except Exception as e:
-        logger.error(f"Error rejecting payment: {e}")
-        await message.answer("⚠️ Something went wrong. Please try again or contact support.")
+        logger.error("Error rejecting payment: %s", e)
+        await message.answer("Something went wrong. Please try again or contact support.")
         return
+
     await state.clear()
     await sync_order_feed(bot, order_id)
 
+    actor_label = message.from_user.username or message.from_user.full_name or str(message.from_user.id)
+    await _edit_payment_admin_messages(
+        bot,
+        order,
+        _payment_processed_text(order, actor_label, approved=False, reason=reason),
+    )
+    await clear_payment_admin_messages(order_id)
+
     await message.answer(
-        f"❌ Order #{order_id} rejected.\nReason: {reason}",
+        f"Order #{order_id} rejected.\nReason: {reason}",
         reply_markup=back_to_admin_kb(),
     )
 
-    # Notify user
     try:
         await bot.send_message(
             chat_id=order.user_id,
             text=(
-                f"❌ <b>Payment Rejected</b>\n\n"
+                f"<b>Payment Rejected</b>\n\n"
                 f"Order: <b>#{order_id}</b>\n"
                 f"Reason: {reason}\n\n"
-                f"Please create a new order and try again."
+                "Please create a new order and try again."
             ),
         )
     except Exception as e:
-        logger.warning(f"Could not notify user {order.user_id}: {e}")
-
-    await _notify_payment_admins_status(
-        bot=bot,
-        order=order,
-        actor_id=message.from_user.id,
-        actor_label=message.from_user.username or message.from_user.full_name,
-        approved=False,
-        reason=reason,
-    )
+        logger.warning("Could not notify user %s: %s", order.user_id, e)

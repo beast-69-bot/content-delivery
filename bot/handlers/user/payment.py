@@ -18,7 +18,7 @@ from keyboards.keyboards import (
     ConfirmCustomerBotCD, ConfirmPartialCD, OrderConfirmCD, PayFullCD, UploadScreenshotCD, CancelOrderCD
 )
 from services.db_service import (
-    approve_payment, count_pending_orders, create_order, get_order,
+    add_payment_admin_message, approve_payment, count_pending_orders, create_order, get_order,
     get_admins_by_role, get_pending_requirements_order_for_user, get_plan, get_settings,
     save_customer_bot, save_customer_requirements, submit_screenshot, update_order_status,
     log_action,
@@ -593,12 +593,13 @@ async def _notify_payment_admins(bot: Bot, order: Order, file_id: str) -> None:
 
     for admin in admins:
         try:
-            await bot.send_photo(
+            sent = await bot.send_photo(
                 chat_id=admin.id,
                 photo=file_id,
                 caption=text,
                 reply_markup=kb,
             )
+            await add_payment_admin_message(order.order_id, admin.id, sent.message_id, "photo")
         except Exception as e:
             logger.warning(f"Could not notify admin {admin.id}: {e}")
 
