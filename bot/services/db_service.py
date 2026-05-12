@@ -478,7 +478,7 @@ async def create_order(
     order_pk = await _next_sequence("orders")
     order_id = await _generate_unique_order_id()
     requirements_text = (plan.product.requirements_text or "").strip()
-    requires_setbot = plan.product.delivery_mode == "customer_bot"
+    requires_setbot = False
     doc = {
         "_id": order_pk,
         "order_id": order_id,

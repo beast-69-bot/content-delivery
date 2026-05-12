@@ -106,18 +106,16 @@ async def add_content_terms(message: Message, state: FSMContext):
     await state.update_data(terms=message.text.strip())
     await state.set_state(AddContentStates.requirements)
     await message.answer(
-        "Delivery mode for this subcategory:\n\n"
-        "Send /setbot if files should be delivered by the buyer's bot after payment.\n"
-        "Send /skip for normal delivery from this bot."
+        "Send /skip to continue.\n\n"
+        "Setbot delivery is currently disabled; files will be delivered from this bot."
     )
 
 
 @router.message(AddContentStates.requirements, ProductAdminFilter())
 async def add_content_requirements(message: Message, state: FSMContext):
     text = (message.text or "").strip()
-    delivery_mode = "customer_bot" if text.lower() == "/setbot" else "main_bot"
     requirements_text = "" if text.lower() in {"/skip", "/setbot"} else text
-    await state.update_data(requirements_text=requirements_text, delivery_mode=delivery_mode, files=[])
+    await state.update_data(requirements_text=requirements_text, delivery_mode="main_bot", files=[])
     await state.set_state(AddContentStates.files)
     await message.answer(
         "Now send files/messages. You can upload them in bulk.\n"

@@ -15,8 +15,6 @@ logger = logging.getLogger(__name__)
 
 
 def _delivery_bot_token(order) -> str | None:
-    if order.plan and order.plan.product and order.plan.product.delivery_mode == "customer_bot":
-        return order.customer_bot_token
     return None
 
 
