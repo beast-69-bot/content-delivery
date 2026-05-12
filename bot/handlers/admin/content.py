@@ -83,7 +83,8 @@ async def add_content_terms(message: Message, state: FSMContext):
     await state.update_data(terms=message.text.strip(), files=[])
     await state.set_state(AddContentStates.files)
     await message.answer(
-        "Now send files/messages one by one.\n"
+        "Now send files/messages. You can upload them in bulk.\n"
+        "Telegram will deliver bulk uploads as separate messages, and I will add all of them to this subcategory.\n"
         "When all files are uploaded, send /done."
     )
 
@@ -127,4 +128,5 @@ async def add_content_file(message: Message, state: FSMContext):
     files = list(data.get("files") or [])
     files.append(_delivery_item_from_message(message))
     await state.update_data(files=files)
-    await message.answer(f"Saved file/message #{len(files)}. Send next file or /done.")
+    if len(files) == 1 or len(files) % 10 == 0:
+        await message.answer(f"Saved {len(files)} file/message(s). Send more files or /done.")

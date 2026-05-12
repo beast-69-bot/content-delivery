@@ -9,6 +9,8 @@ from typing import Any, Awaitable, Callable, Dict
 from aiogram import BaseMiddleware
 from aiogram.types import Message, TelegramObject
 
+from states.states import AddContentStates
+
 
 class ThrottleMiddleware(BaseMiddleware):
     def __init__(self, rate_limit: float = 1.0):
@@ -22,6 +24,10 @@ class ThrottleMiddleware(BaseMiddleware):
         data: Dict[str, Any],
     ) -> Any:
         if isinstance(event, Message) and event.from_user:
+            state = data.get("state")
+            if state and await state.get_state() == AddContentStates.files.state:
+                return await handler(event, data)
+
             user_id = event.from_user.id
             now = time.monotonic()
             last = self._last_call.get(user_id, 0)
