@@ -80,7 +80,19 @@ async def add_content_notes(message: Message, state: FSMContext):
 
 @router.message(AddContentStates.terms, ProductAdminFilter())
 async def add_content_terms(message: Message, state: FSMContext):
-    await state.update_data(terms=message.text.strip(), files=[])
+    await state.update_data(terms=message.text.strip())
+    await state.set_state(AddContentStates.requirements)
+    await message.answer(
+        "Send post-payment buyer info prompt for this subcategory, or /skip.\n\n"
+        "Use this for setbot/details flow. Example:\n"
+        "Send your bot token, admin user ID, and setup notes in one message."
+    )
+
+
+@router.message(AddContentStates.requirements, ProductAdminFilter())
+async def add_content_requirements(message: Message, state: FSMContext):
+    requirements_text = "" if message.text == "/skip" else message.text.strip()
+    await state.update_data(requirements_text=requirements_text, files=[])
     await state.set_state(AddContentStates.files)
     await message.answer(
         "Now send files/messages. You can upload them in bulk.\n"
@@ -102,7 +114,7 @@ async def add_content_done(message: Message, state: FSMContext):
         emoji="*",
         tagline=data.get("terms", ""),
         description=data.get("notes", ""),
-        requirements_text=None,
+        requirements_text=data.get("requirements_text") or None,
         image_file_id=None,
         category=data["category"],
         created_by=message.from_user.id,

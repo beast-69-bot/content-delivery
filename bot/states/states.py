@@ -94,4 +94,5 @@ class AddContentStates(StatesGroup):
     full_price = State()
     notes = State()
     terms = State()
+    requirements = State()
     files = State()
