@@ -647,6 +647,36 @@ async def clear_payment_admin_messages(order_id: str) -> None:
     await get_db().payment_admin_messages.delete_many({"order_id": order_id})
 
 
+async def add_order_flow_message(order_id: str, chat_id: int, message_id: int) -> None:
+    await get_db().order_flow_messages.update_one(
+        {"order_id": order_id, "chat_id": int(chat_id), "message_id": int(message_id)},
+        {
+            "$setOnInsert": {
+                "order_id": order_id,
+                "chat_id": int(chat_id),
+                "message_id": int(message_id),
+                "created_at": _utc_now_naive(),
+            },
+        },
+        upsert=True,
+    )
+
+
+async def get_order_flow_messages(order_id: str) -> list[dict]:
+    docs = await get_db().order_flow_messages.find({"order_id": order_id}).to_list(length=None)
+    return [
+        {
+            "chat_id": int(doc["chat_id"]),
+            "message_id": int(doc["message_id"]),
+        }
+        for doc in docs
+    ]
+
+
+async def clear_order_flow_messages(order_id: str) -> None:
+    await get_db().order_flow_messages.delete_many({"order_id": order_id})
+
+
 async def set_order_channel_message_id(order_id: str, message_id: int | None) -> bool:
     result = await get_db().orders.update_one({"order_id": order_id}, {"$set": {"channel_message_id": message_id}})
     return result.matched_count > 0

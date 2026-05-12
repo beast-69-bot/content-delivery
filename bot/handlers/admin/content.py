@@ -24,6 +24,29 @@ def _category_kb(categories: list[str]):
     return builder.as_markup()
 
 
+async def _remember_messages(state: FSMContext, *message_ids: int) -> None:
+    data = await state.get_data()
+    known = list(data.get("cleanup_message_ids") or [])
+    for message_id in message_ids:
+        if message_id and message_id not in known:
+            known.append(message_id)
+    await state.update_data(cleanup_message_ids=known)
+
+
+async def _answer_and_remember(message: Message, state: FSMContext, text: str, **kwargs) -> Message:
+    sent = await message.answer(text, **kwargs)
+    await _remember_messages(state, sent.message_id)
+    return sent
+
+
+async def _cleanup_add_content_messages(message: Message, message_ids: list[int]) -> None:
+    for message_id in message_ids:
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=message_id)
+        except Exception:
+            pass
+
+
 def _delivery_item_from_message(message: Message) -> dict:
     item = {
         "kind": "copy_message",
@@ -59,19 +82,21 @@ def _delivery_item_from_message(message: Message) -> dict:
 async def cmd_add_content(message: Message, state: FSMContext):
     categories = await get_categories()
     await state.set_state(AddContentStates.category)
-    await state.update_data(category_options=categories)
-    await message.answer(
+    await state.update_data(category_options=categories, cleanup_message_ids=[message.message_id])
+    sent = await message.answer(
         "<b>Add Content</b>\n\n"
         "Choose an existing category or add a new one:",
         reply_markup=_category_kb(categories),
     )
+    await _remember_messages(state, sent.message_id)
 
 
 @router.callback_query(F.data.startswith("addcontent:category:"), AddContentStates.category, ProductAdminFilter())
 async def add_content_category_button(callback: CallbackQuery, state: FSMContext):
     choice = callback.data.rsplit(":", 1)[1]
     if choice == "new":
-        await callback.message.answer("Send new category name:")
+        sent = await callback.message.answer("Send new category name:")
+        await _remember_messages(state, sent.message_id)
         await callback.answer()
         return
 
@@ -85,58 +110,66 @@ async def add_content_category_button(callback: CallbackQuery, state: FSMContext
 
     await state.update_data(category=category)
     await state.set_state(AddContentStates.subcategory)
-    await callback.message.answer(f"Category selected: <b>{category}</b>\n\nSend subcategory/chapter name:")
+    sent = await callback.message.answer(f"Category selected: <b>{category}</b>\n\nSend subcategory/chapter name:")
+    await _remember_messages(state, sent.message_id)
     await callback.answer()
 
 
 @router.message(AddContentStates.category, ProductAdminFilter())
 async def add_content_category(message: Message, state: FSMContext):
+    await _remember_messages(state, message.message_id)
     category = message.text.strip()
     if not category:
-        await message.answer("Category cannot be empty.")
+        await _answer_and_remember(message, state, "Category cannot be empty.")
         return
     await state.update_data(category=category)
     await state.set_state(AddContentStates.subcategory)
-    await message.answer("Send subcategory/chapter name:")
+    await _answer_and_remember(message, state, "Send subcategory/chapter name:")
 
 
 @router.message(AddContentStates.subcategory, ProductAdminFilter())
 async def add_content_subcategory(message: Message, state: FSMContext):
+    await _remember_messages(state, message.message_id)
     name = message.text.strip()
     if not name:
-        await message.answer("Subcategory name cannot be empty.")
+        await _answer_and_remember(message, state, "Subcategory name cannot be empty.")
         return
     await state.update_data(name=name)
     await state.set_state(AddContentStates.full_price)
-    await message.answer("Send full price, for example 199:")
+    await _answer_and_remember(message, state, "Send full price, for example 199:")
 
 
 @router.message(AddContentStates.full_price, ProductAdminFilter())
 async def add_content_price(message: Message, state: FSMContext):
+    await _remember_messages(state, message.message_id)
     try:
         price = float(message.text.strip())
         if price <= 0:
             raise ValueError
     except ValueError:
-        await message.answer("Send a valid positive price.")
+        await _answer_and_remember(message, state, "Send a valid positive price.")
         return
     await state.update_data(price=price)
     await state.set_state(AddContentStates.notes)
-    await message.answer("Send notes/description for this subcategory:")
+    await _answer_and_remember(message, state, "Send notes/description for this subcategory:")
 
 
 @router.message(AddContentStates.notes, ProductAdminFilter())
 async def add_content_notes(message: Message, state: FSMContext):
+    await _remember_messages(state, message.message_id)
     await state.update_data(notes=message.text.strip())
     await state.set_state(AddContentStates.terms)
-    await message.answer("Send Terms & Conditions text:")
+    await _answer_and_remember(message, state, "Send Terms & Conditions text:")
 
 
 @router.message(AddContentStates.terms, ProductAdminFilter())
 async def add_content_terms(message: Message, state: FSMContext):
+    await _remember_messages(state, message.message_id)
     await state.update_data(terms=message.text.strip())
     await state.set_state(AddContentStates.requirements)
-    await message.answer(
+    await _answer_and_remember(
+        message,
+        state,
         "Send /skip to continue.\n\n"
         "Setbot delivery is currently disabled; files will be delivered from this bot."
     )
@@ -144,11 +177,14 @@ async def add_content_terms(message: Message, state: FSMContext):
 
 @router.message(AddContentStates.requirements, ProductAdminFilter())
 async def add_content_requirements(message: Message, state: FSMContext):
+    await _remember_messages(state, message.message_id)
     text = (message.text or "").strip()
     requirements_text = "" if text.lower() in {"/skip", "/setbot"} else text
     await state.update_data(requirements_text=requirements_text, delivery_mode="main_bot", files=[])
     await state.set_state(AddContentStates.files)
-    await message.answer(
+    await _answer_and_remember(
+        message,
+        state,
         "Now send files/messages. You can upload them in bulk.\n"
         "Telegram will deliver bulk uploads as separate messages, and I will add all of them to this subcategory.\n"
         "When all files are uploaded, send /done."
@@ -158,9 +194,10 @@ async def add_content_requirements(message: Message, state: FSMContext):
 @router.message(AddContentStates.files, Command("done"), ProductAdminFilter())
 async def add_content_done(message: Message, state: FSMContext):
     data = await state.get_data()
+    await _remember_messages(state, message.message_id)
     files = list(data.get("files") or [])
     if not files:
-        await message.answer("Upload at least one file before /done.")
+        await _answer_and_remember(message, state, "Upload at least one file before /done.")
         return
 
     product = await create_product(
@@ -176,6 +213,7 @@ async def add_content_done(message: Message, state: FSMContext):
     )
     await add_plan(product.id, "Full Access", data["price"], files)
     await log_action(message.from_user.id, "add_content", str(product.id), product.name)
+    cleanup_message_ids = list((await state.get_data()).get("cleanup_message_ids") or [])
     await state.clear()
 
     await message.answer(
@@ -187,13 +225,15 @@ async def add_content_done(message: Message, state: FSMContext):
         "Users can now buy full access or select a partial file range.",
         reply_markup=back_to_admin_kb(),
     )
+    await _cleanup_add_content_messages(message, cleanup_message_ids)
 
 
 @router.message(AddContentStates.files, ProductAdminFilter())
 async def add_content_file(message: Message, state: FSMContext):
+    await _remember_messages(state, message.message_id)
     data = await state.get_data()
     files = list(data.get("files") or [])
     files.append(_delivery_item_from_message(message))
     await state.update_data(files=files)
     if len(files) == 1 or len(files) % 10 == 0:
-        await message.answer(f"Saved {len(files)} file/message(s). Send more files or /done.")
+        await _answer_and_remember(message, state, f"Saved {len(files)} file/message(s). Send more files or /done.")

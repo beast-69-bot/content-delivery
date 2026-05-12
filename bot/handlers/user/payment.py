@@ -18,8 +18,9 @@ from keyboards.keyboards import (
     ConfirmCustomerBotCD, ConfirmPartialCD, OrderConfirmCD, PayFullCD, UploadScreenshotCD, CancelOrderCD
 )
 from services.db_service import (
-    add_payment_admin_message, approve_payment, count_pending_orders, create_order, get_order,
-    get_admins_by_role, get_pending_requirements_order_for_user, get_plan, get_settings,
+    add_order_flow_message, add_payment_admin_message, approve_payment,
+    clear_order_flow_messages, count_pending_orders, create_order, get_order,
+    get_admins_by_role, get_order_flow_messages, get_pending_requirements_order_for_user, get_plan, get_settings,
     save_customer_bot, save_customer_requirements, submit_screenshot, update_order_status,
     log_action,
 )
@@ -32,6 +33,15 @@ from utils.qr_generator import generate_upi_qr
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+async def _delete_order_flow_messages(bot: Bot, order_id: str) -> None:
+    for item in await get_order_flow_messages(order_id):
+        try:
+            await bot.delete_message(chat_id=item["chat_id"], message_id=item["message_id"])
+        except Exception as e:
+            logger.debug("Could not delete payment flow message %s for %s: %s", item, order_id, e)
+    await clear_order_flow_messages(order_id)
 
 
 class PendingRequirementsFilter(BaseFilter):
@@ -99,6 +109,7 @@ async def _handle_post_payment_confirmation(
             f"Order <b>#{latest_order.order_id}</b> confirmed."
         ),
     )
+    await _delete_order_flow_messages(bot, latest_order.order_id)
 
     if _order_needs_customer_bot(latest_order):
         await _set_customer_bot_state(dispatcher, bot, latest_order.user_id, latest_order.order_id)
@@ -370,11 +381,12 @@ async def _handle_manual_payment(callback: CallbackQuery, bot: Bot, order: Order
     kb = payment_sent_kb(order.order_id)
 
     await callback.message.delete()
-    await callback.message.answer_photo(
+    payment_message = await callback.message.answer_photo(
         photo=BufferedInputFile(qr_bytes.read(), filename="payment_qr.png"),
         caption=text,
         reply_markup=kb,
     )
+    await add_order_flow_message(order.order_id, order.user_id, payment_message.message_id)
     await callback.answer()
 
 
@@ -517,7 +529,7 @@ async def cb_upload_screenshot(callback: CallbackQuery, callback_data: UploadScr
     await state.set_state(PaymentStates.waiting_screenshot)
     await state.update_data(order_id=order_id)
 
-    await callback.message.answer(
+    prompt = await callback.message.answer(
         f"📸 <b>Send Payment Screenshot</b>\n\n"
         f"Please send a screenshot of your payment for order <b>#{order_id}</b>.\n\n"
         f"Make sure the screenshot shows:\n"
@@ -526,6 +538,7 @@ async def cb_upload_screenshot(callback: CallbackQuery, callback_data: UploadScr
         f"• Date and time",
         reply_markup=cancel_screenshot_kb(order_id),
     )
+    await add_order_flow_message(order_id, callback.from_user.id, prompt.message_id)
     await callback.answer()
 
 
@@ -551,19 +564,21 @@ async def handle_screenshot(message: Message, state: FSMContext, bot: Bot) -> No
         # Save screenshot file_id
         file_id = message.photo[-1].file_id
         await submit_screenshot(order_id, file_id)
+        await add_order_flow_message(order_id, message.chat.id, message.message_id)
     except Exception as e:
         logger.error(f"Error submitting screenshot: {e}")
         await message.answer("⚠️ Something went wrong. Please try again or contact support.")
         return
     await state.clear()
 
-    await message.answer(
+    received_message = await message.answer(
         f"✅ <b>Screenshot received!</b>\n\n"
         f"Order: <b>#{order_id}</b>\n"
         f"Our team will verify your payment shortly.\n\n"
         f"You'll be notified once verified. Thank you! 🙏",
         reply_markup=main_menu_kb(),
     )
+    await add_order_flow_message(order_id, message.chat.id, received_message.message_id)
     await sync_order_feed(bot, order_id)
 
     # Notify payment admins

@@ -54,6 +54,31 @@ async def _send_item_with_customer_bot(source_bot: Bot, delivery_bot: Bot, chat_
         await delivery_bot.send_document(chat_id=chat_id, document=input_file, caption=caption)
 
 
+async def _send_item_with_main_bot(bot: Bot, chat_id: int, item: dict) -> None:
+    send_as = item.get("send_as")
+    file_id = item.get("file_id")
+    caption = item.get("caption")
+
+    if send_as == "text":
+        await bot.send_message(chat_id=chat_id, text=item.get("text") or "")
+    elif send_as == "photo" and file_id:
+        await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
+    elif send_as == "video" and file_id:
+        await bot.send_video(chat_id=chat_id, video=file_id, caption=caption)
+    elif send_as == "audio" and file_id:
+        await bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption)
+    elif send_as == "voice" and file_id:
+        await bot.send_voice(chat_id=chat_id, voice=file_id)
+    elif file_id:
+        await bot.send_document(chat_id=chat_id, document=file_id, caption=caption)
+    else:
+        await bot.copy_message(
+            chat_id=chat_id,
+            from_chat_id=int(item["from_chat_id"]),
+            message_id=int(item["message_id"]),
+        )
+
+
 async def auto_deliver_order(bot: Bot, order_id: str, admin_id: int = 0) -> bool:
     order = await get_order(order_id)
     if not order or order.status != OrderStatus.paid or not order.plan:
@@ -81,11 +106,7 @@ async def auto_deliver_order(bot: Bot, order_id: str, admin_id: int = 0) -> bool
             if customer_bot_token:
                 await _send_item_with_customer_bot(bot, delivery_bot, order.user_id, item)
             else:
-                await bot.copy_message(
-                    chat_id=order.user_id,
-                    from_chat_id=int(item["from_chat_id"]),
-                    message_id=int(item["message_id"]),
-                )
+                await _send_item_with_main_bot(bot, order.user_id, item)
 
         delivered = await mark_delivered(order_id, admin_id)
         if delivered:
