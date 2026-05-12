@@ -14,13 +14,13 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from config.settings import settings
 from keyboards.keyboards import (
-    cancel_screenshot_kb, main_menu_kb, payment_sent_kb,
-    ConfirmPartialCD, OrderConfirmCD, PayFullCD, UploadScreenshotCD, CancelOrderCD
+    cancel_screenshot_kb, customer_bot_started_kb, main_menu_kb, payment_sent_kb,
+    ConfirmCustomerBotCD, ConfirmPartialCD, OrderConfirmCD, PayFullCD, UploadScreenshotCD, CancelOrderCD
 )
 from services.db_service import (
     approve_payment, count_pending_orders, create_order, get_order,
     get_admins_by_role, get_pending_requirements_order_for_user, get_plan, get_settings,
-    save_customer_requirements, submit_screenshot, update_order_status,
+    save_customer_bot, save_customer_requirements, submit_screenshot, update_order_status,
     log_action,
 )
 from database.models import AdminRole, BotSettings, Order, OrderStatus
@@ -44,6 +44,13 @@ def _order_needs_requirements(order: Order) -> bool:
     return bool((order.requirements_text_snapshot or "").strip()) and not bool(order.requirements_received)
 
 
+def _order_needs_customer_bot(order: Order) -> bool:
+    return (
+        bool(order.plan and order.plan.product and order.plan.product.delivery_mode == "customer_bot")
+        and not bool(order.customer_bot_token)
+    )
+
+
 async def _set_requirements_state(dispatcher: Dispatcher | None, bot: Bot, user_id: int, order_id: str) -> None:
     if dispatcher is None:
         logger.warning(f"Dispatcher unavailable while setting requirements state for order {order_id}")
@@ -58,6 +65,22 @@ async def _set_requirements_state(dispatcher: Dispatcher | None, bot: Bot, user_
         await state.update_data(requirements_order_id=order_id)
     except Exception as e:
         logger.warning(f"Could not set requirements state for order {order_id}: {e}")
+
+
+async def _set_customer_bot_state(dispatcher: Dispatcher | None, bot: Bot, user_id: int, order_id: str) -> None:
+    if dispatcher is None:
+        logger.warning(f"Dispatcher unavailable while setting customer bot state for order {order_id}")
+        return
+
+    try:
+        state = FSMContext(
+            storage=dispatcher.storage,
+            key=StorageKey(bot_id=bot.id, chat_id=user_id, user_id=user_id),
+        )
+        await state.set_state(PaymentStates.waiting_customer_bot_token)
+        await state.update_data(customer_bot_order_id=order_id)
+    except Exception as e:
+        logger.warning(f"Could not set customer bot state for order {order_id}: {e}")
 
 
 async def _handle_post_payment_confirmation(
@@ -76,6 +99,19 @@ async def _handle_post_payment_confirmation(
             f"Order <b>#{latest_order.order_id}</b> confirmed."
         ),
     )
+
+    if _order_needs_customer_bot(latest_order):
+        await _set_customer_bot_state(dispatcher, bot, latest_order.user_id, latest_order.order_id)
+        await bot.send_message(
+            chat_id=latest_order.user_id,
+            text=(
+                "🤖 <b>Set Your Delivery Bot</b>\n\n"
+                "Payment confirm ho gaya hai. Files aapke bot se deliver hongi.\n\n"
+                "Ab apne bot ka <b>BOT_TOKEN</b> bhejo."
+            ),
+        )
+        await sync_order_feed(bot, latest_order.order_id)
+        return
 
     if _order_needs_requirements(latest_order):
         await _set_requirements_state(dispatcher, bot, latest_order.user_id, latest_order.order_id)
@@ -148,6 +184,38 @@ async def _process_requirements_response(message: Message, state: FSMContext, bo
 
             await message.answer("Auto-delivery file is not configured correctly. Admin has been notified.")
             await _notify_order_admins(bot, latest_order)
+
+
+async def _process_customer_bot_token(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    order_id = data.get("customer_bot_order_id")
+    if not order_id:
+        await state.clear()
+        return
+
+    token = (message.text or "").strip()
+    if ":" not in token:
+        await message.answer("Invalid BOT_TOKEN. Please send valid token from @BotFather.")
+        return
+
+    customer_bot = Bot(token=token)
+    try:
+        bot_info = await customer_bot.get_me()
+    except Exception:
+        await message.answer("Invalid BOT_TOKEN ya bot reachable nahi hai. Correct token bhejo.")
+        return
+    finally:
+        await customer_bot.session.close()
+
+    await save_customer_bot(order_id, token, bot_info.username or "")
+    await state.clear()
+
+    await message.answer(
+        "✅ <b>Bot Connected</b>\n\n"
+        f"Delivery bot: @{bot_info.username}\n\n"
+        "Ab apna bot open karke /start karo. Uske baad neeche OK dabao, files wahi bot deliver karega.",
+        reply_markup=customer_bot_started_kb(order_id),
+    )
 
 
 async def _create_and_start_payment(
@@ -540,6 +608,34 @@ async def handle_requirements_response(message: Message, state: FSMContext, bot:
     await _process_requirements_response(message, state, bot)
 
 
+@router.message(PaymentStates.waiting_customer_bot_token, F.text)
+async def handle_customer_bot_token(message: Message, state: FSMContext) -> None:
+    await _process_customer_bot_token(message, state)
+
+
+@router.callback_query(ConfirmCustomerBotCD.filter())
+async def cb_confirm_customer_bot_started(callback: CallbackQuery, callback_data: ConfirmCustomerBotCD, bot: Bot) -> None:
+    order = await get_order(callback_data.order_id)
+    if not order or order.status != OrderStatus.paid or not order.customer_bot_token:
+        await callback.answer("Order is not ready for bot delivery.", show_alert=True)
+        return
+
+    delivered = await auto_deliver_order(bot, order.order_id, admin_id=0)
+    await sync_order_feed(bot, order.order_id)
+    if delivered:
+        await callback.message.edit_text(
+            f"✅ Order <b>#{order.order_id}</b> delivered from @{order.customer_bot_username}.",
+            reply_markup=main_menu_kb(),
+        )
+        await callback.answer("Delivered.", show_alert=True)
+        return
+
+    await callback.message.answer(
+        "Delivery failed. Please make sure you opened your bot and pressed /start, then press OK again."
+    )
+    await callback.answer("Start your bot first, then press OK again.", show_alert=True)
+
+
 @router.message(PendingRequirementsFilter(), F.text)
 async def handle_requirements_response_fallback(message: Message, state: FSMContext, bot: Bot) -> None:
     await _process_requirements_response(message, state, bot)
@@ -589,6 +685,11 @@ async def handle_non_text_requirements(message: Message) -> None:
     await message.answer(
         "⚠️ Please send the required order details in <b>text format</b>."
     )
+
+
+@router.message(PaymentStates.waiting_customer_bot_token)
+async def handle_non_text_customer_bot_token(message: Message) -> None:
+    await message.answer("Please send your bot token as text.")
 
 
 @router.message(PendingRequirementsFilter())

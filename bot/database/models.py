@@ -67,6 +67,7 @@ class Product:
     tagline: Optional[str] = None
     description: Optional[str] = None
     requirements_text: Optional[str] = None
+    delivery_mode: str = "main_bot"
     category: str = "General"
     is_active: bool = True
     sort_order: int = 0
@@ -105,6 +106,8 @@ class Order:
     screenshot_file_id: Optional[str] = None
     requirements_text_snapshot: Optional[str] = None
     customer_requirements_response: Optional[str] = None
+    customer_bot_token: Optional[str] = None
+    customer_bot_username: Optional[str] = None
     requirements_received: bool = True
     channel_message_id: Optional[int] = None
     verified_by: Optional[int] = None

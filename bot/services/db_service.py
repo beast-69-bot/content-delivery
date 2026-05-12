@@ -78,6 +78,7 @@ def _product_from_doc(doc: dict | None) -> Optional[Product]:
         tagline=doc.get("tagline"),
         description=doc.get("description"),
         requirements_text=doc.get("requirements_text"),
+        delivery_mode=doc.get("delivery_mode", "main_bot"),
         category=doc.get("category", "General"),
         is_active=bool(doc.get("is_active", True)),
         sort_order=int(doc.get("sort_order", 0)),
@@ -120,6 +121,8 @@ def _order_from_doc(doc: dict | None) -> Optional[Order]:
         screenshot_file_id=doc.get("screenshot_file_id"),
         requirements_text_snapshot=doc.get("requirements_text_snapshot"),
         customer_requirements_response=doc.get("customer_requirements_response"),
+        customer_bot_token=doc.get("customer_bot_token"),
+        customer_bot_username=doc.get("customer_bot_username"),
         requirements_received=bool(doc.get("requirements_received", True)),
         channel_message_id=doc.get("channel_message_id"),
         verified_by=doc.get("verified_by"),
@@ -376,7 +379,17 @@ async def search_products(query: str) -> list[Product]:
     return [_product_from_doc(doc) for doc in docs if doc]
 
 
-async def create_product(name: str, emoji: str, tagline: str, description: str, requirements_text: Optional[str], image_file_id: Optional[str], category: str, created_by: int) -> Product:
+async def create_product(
+    name: str,
+    emoji: str,
+    tagline: str,
+    description: str,
+    requirements_text: Optional[str],
+    image_file_id: Optional[str],
+    category: str,
+    created_by: int,
+    delivery_mode: str = "main_bot",
+) -> Product:
     db = get_db()
     now = _utc_now_naive()
     product_id = await _next_sequence("products")
@@ -389,6 +402,7 @@ async def create_product(name: str, emoji: str, tagline: str, description: str, 
             "tagline": tagline,
             "description": description,
             "requirements_text": requirements_text,
+            "delivery_mode": delivery_mode,
             "category": category or "General",
             "is_active": True,
             "sort_order": 0,
@@ -464,6 +478,7 @@ async def create_order(
     order_pk = await _next_sequence("orders")
     order_id = await _generate_unique_order_id()
     requirements_text = (plan.product.requirements_text or "").strip()
+    requires_setbot = plan.product.delivery_mode == "customer_bot"
     doc = {
         "_id": order_pk,
         "order_id": order_id,
@@ -479,7 +494,9 @@ async def create_order(
         "screenshot_file_id": None,
         "requirements_text_snapshot": requirements_text or None,
         "customer_requirements_response": None,
-        "requirements_received": not bool(requirements_text),
+        "customer_bot_token": None,
+        "customer_bot_username": None,
+        "requirements_received": not (bool(requirements_text) or requires_setbot),
         "channel_message_id": None,
         "verified_by": None,
         "delivered_by": None,
@@ -580,6 +597,16 @@ async def save_customer_requirements(order_id: str, response: str) -> bool:
         order_id,
         OrderStatus.paid,
         customer_requirements_response=response,
+        requirements_received=True,
+    )
+
+
+async def save_customer_bot(order_id: str, token: str, username: str) -> bool:
+    return await update_order_status(
+        order_id,
+        OrderStatus.paid,
+        customer_bot_token=token,
+        customer_bot_username=username,
         requirements_received=True,
     )
 

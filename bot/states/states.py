@@ -11,6 +11,7 @@ from aiogram.fsm.state import State, StatesGroup
 class PaymentStates(StatesGroup):
     waiting_screenshot = State()
     waiting_requirements = State()
+    waiting_customer_bot_token = State()
     waiting_file_range = State()
 
 

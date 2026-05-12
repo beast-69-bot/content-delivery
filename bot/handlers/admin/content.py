@@ -15,11 +15,34 @@ router = Router()
 
 
 def _delivery_item_from_message(message: Message) -> dict:
-    return {
+    item = {
         "kind": "copy_message",
         "from_chat_id": message.chat.id,
         "message_id": message.message_id,
     }
+    if message.document:
+        item.update({
+            "send_as": "document",
+            "file_id": message.document.file_id,
+            "file_name": message.document.file_name,
+            "caption": message.caption,
+        })
+    elif message.video:
+        item.update({
+            "send_as": "video",
+            "file_id": message.video.file_id,
+            "file_name": message.video.file_name,
+            "caption": message.caption,
+        })
+    elif message.photo:
+        item.update({"send_as": "photo", "file_id": message.photo[-1].file_id, "caption": message.caption})
+    elif message.audio:
+        item.update({"send_as": "audio", "file_id": message.audio.file_id, "caption": message.caption})
+    elif message.voice:
+        item.update({"send_as": "voice", "file_id": message.voice.file_id})
+    elif message.text:
+        item.update({"send_as": "text", "text": message.text})
+    return item
 
 
 @router.message(Command("addcontent"), ProductAdminFilter())
@@ -83,16 +106,18 @@ async def add_content_terms(message: Message, state: FSMContext):
     await state.update_data(terms=message.text.strip())
     await state.set_state(AddContentStates.requirements)
     await message.answer(
-        "Send post-payment buyer info prompt for this subcategory, or /skip.\n\n"
-        "Use this for setbot/details flow. Example:\n"
-        "Send your bot token, admin user ID, and setup notes in one message."
+        "Delivery mode for this subcategory:\n\n"
+        "Send /setbot if files should be delivered by the buyer's bot after payment.\n"
+        "Send /skip for normal delivery from this bot."
     )
 
 
 @router.message(AddContentStates.requirements, ProductAdminFilter())
 async def add_content_requirements(message: Message, state: FSMContext):
-    requirements_text = "" if message.text == "/skip" else message.text.strip()
-    await state.update_data(requirements_text=requirements_text, files=[])
+    text = (message.text or "").strip()
+    delivery_mode = "customer_bot" if text.lower() == "/setbot" else "main_bot"
+    requirements_text = "" if text.lower() in {"/skip", "/setbot"} else text
+    await state.update_data(requirements_text=requirements_text, delivery_mode=delivery_mode, files=[])
     await state.set_state(AddContentStates.files)
     await message.answer(
         "Now send files/messages. You can upload them in bulk.\n"
@@ -118,6 +143,7 @@ async def add_content_done(message: Message, state: FSMContext):
         image_file_id=None,
         category=data["category"],
         created_by=message.from_user.id,
+        delivery_mode=data.get("delivery_mode", "main_bot"),
     )
     await add_plan(product.id, "Full Access", data["price"], files)
     await log_action(message.from_user.id, "add_content", str(product.id), product.name)

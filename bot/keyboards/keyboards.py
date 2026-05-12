@@ -69,6 +69,10 @@ class CancelOrderCD(CallbackData, prefix="cancel_order"):
     order_id: str
 
 
+class ConfirmCustomerBotCD(CallbackData, prefix="confirm_customer_bot"):
+    order_id: str
+
+
 class OrderDetailCD(CallbackData, prefix="order_detail"):
     order_id: str
 
@@ -296,6 +300,14 @@ def payment_sent_kb(order_id: str) -> InlineKeyboardMarkup:
 def cancel_screenshot_kb(order_id: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="❌ Cancel", callback_data=CancelOrderCD(order_id=order_id).pack())
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def customer_bot_started_kb(order_id: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="OK, I started my bot", callback_data=ConfirmCustomerBotCD(order_id=order_id).pack())
+    builder.button(text="Cancel Order", callback_data=CancelOrderCD(order_id=order_id).pack())
     builder.adjust(1)
     return builder.as_markup()
 

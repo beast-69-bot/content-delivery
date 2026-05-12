@@ -36,11 +36,34 @@ router = Router()
 
 
 def _delivery_item_from_message(message: Message) -> dict:
-    return {
+    item = {
         "kind": "copy_message",
         "from_chat_id": message.chat.id,
         "message_id": message.message_id,
     }
+    if message.document:
+        item.update({
+            "send_as": "document",
+            "file_id": message.document.file_id,
+            "file_name": message.document.file_name,
+            "caption": message.caption,
+        })
+    elif message.video:
+        item.update({
+            "send_as": "video",
+            "file_id": message.video.file_id,
+            "file_name": message.video.file_name,
+            "caption": message.caption,
+        })
+    elif message.photo:
+        item.update({"send_as": "photo", "file_id": message.photo[-1].file_id, "caption": message.caption})
+    elif message.audio:
+        item.update({"send_as": "audio", "file_id": message.audio.file_id, "caption": message.caption})
+    elif message.voice:
+        item.update({"send_as": "voice", "file_id": message.voice.file_id})
+    elif message.text:
+        item.update({"send_as": "text", "text": message.text})
+    return item
 
 
 def _edit_fields_kb(product_id: int):
