@@ -42,6 +42,13 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 
+async def _ack(callback: CallbackQuery, *args, **kwargs) -> None:
+    try:
+        await callback.answer(*args, **kwargs)
+    except Exception:
+        pass
+
+
 async def _edit_or_send(callback: CallbackQuery, text: str, reply_markup):
     try:
         await callback.message.edit_text(text, reply_markup=reply_markup)
@@ -55,22 +62,22 @@ async def _edit_or_send(callback: CallbackQuery, text: str, reply_markup):
 
 @router.callback_query(BrowseCategoriesCD.filter())
 async def cb_browse_categories(callback: CallbackQuery, callback_data: BrowseCategoriesCD, state: FSMContext):
+    await _ack(callback)
     try:
         categories = await get_categories()
     except Exception as e:
         logger.error("DB Error in categories list: %s", e)
-        await callback.answer("Something went wrong. Please try again or contact support.", show_alert=True)
+        await _ack(callback, "Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     await state.update_data(product_category=None, product_page=0)
 
     if not categories:
-        await callback.answer("No categories available right now.", show_alert=True)
+        await _ack(callback, "No categories available right now.", show_alert=True)
         return
 
     text = "<b>Content Categories</b>\n\nSelect a category to browse content:"
     await _edit_or_send(callback, text, categories_kb(categories))
-    await callback.answer()
 
 
 @router.message(Command("categories"))
@@ -88,17 +95,18 @@ async def cmd_categories(message: Message, state: FSMContext):
 
 @router.callback_query(BrowseCategoryCD.filter())
 async def cb_browse_category(callback: CallbackQuery, callback_data: BrowseCategoryCD, state: FSMContext):
+    await _ack(callback)
     try:
         category = callback_data.category
         page = callback_data.page
         products, total = await get_products_page_by_category(category, page)
     except Exception as e:
         logger.error("DB Error in category products list: %s", e)
-        await callback.answer("Something went wrong. Please try again or contact support.", show_alert=True)
+        await _ack(callback, "Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     if not products:
-        await callback.answer("No content available in this category right now.", show_alert=True)
+        await _ack(callback, "No content available in this category right now.", show_alert=True)
         return
 
     await state.update_data(product_category=category, product_page=page)
@@ -106,21 +114,21 @@ async def cb_browse_category(callback: CallbackQuery, callback_data: BrowseCateg
     kb = category_products_page_kb(category, products, page, total)
 
     await _edit_or_send(callback, text, kb)
-    await callback.answer()
 
 
 @router.callback_query(BrowseProductsCD.filter())
 async def cb_browse_products(callback: CallbackQuery, callback_data: BrowseProductsCD, state: FSMContext):
+    await _ack(callback)
     try:
         page = callback_data.page
         products, total = await get_products_page(page)
     except Exception as e:
         logger.error("DB Error in products list: %s", e)
-        await callback.answer("Something went wrong. Please try again or contact support.", show_alert=True)
+        await _ack(callback, "Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     if not products:
-        await callback.answer("No content available right now.", show_alert=True)
+        await _ack(callback, "No content available right now.", show_alert=True)
         return
 
     await state.update_data(product_category=None, product_page=page)
@@ -128,21 +136,21 @@ async def cb_browse_products(callback: CallbackQuery, callback_data: BrowseProdu
     kb = products_page_kb(products, page, total)
 
     await _edit_or_send(callback, text, kb)
-    await callback.answer()
 
 
 @router.callback_query(ProductCD.filter())
 async def cb_product_detail(callback: CallbackQuery, callback_data: ProductCD, state: FSMContext):
+    await _ack(callback)
     try:
         product_id = callback_data.id
         product = await get_product(product_id)
     except Exception as e:
         logger.error("DB Error in product detail: %s", e)
-        await callback.answer("Something went wrong. Please try again or contact support.", show_alert=True)
+        await _ack(callback, "Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     if not product:
-        await callback.answer("Content not found.", show_alert=True)
+        await _ack(callback, "Content not found.", show_alert=True)
         return
 
     full_plan = next((plan for plan in product.plans if plan.is_active), None)
@@ -184,22 +192,22 @@ async def cb_product_detail(callback: CallbackQuery, callback_data: ProductCD, s
     else:
         await _edit_or_send(callback, text, kb)
 
-    await callback.answer()
 
 
 @router.callback_query(AcceptContentCD.filter())
 async def cb_accept_content(callback: CallbackQuery, callback_data: AcceptContentCD):
+    await _ack(callback)
     product = await get_product(callback_data.product_id)
     if not product:
-        await callback.answer("Content not found.", show_alert=True)
+        await _ack(callback, "Content not found.", show_alert=True)
         return
     plan = next((item for item in product.plans if item.is_active), None)
     if not plan:
-        await callback.answer("No files available for this content.", show_alert=True)
+        await _ack(callback, "No files available for this content.", show_alert=True)
         return
     total_files = len(plan.delivery_items or [])
     if total_files <= 0:
-        await callback.answer("No files available for this content.", show_alert=True)
+        await _ack(callback, "No files available for this content.", show_alert=True)
         return
     per_file = plan.price / total_files
     text = (
@@ -212,18 +220,18 @@ async def cb_accept_content(callback: CallbackQuery, callback_data: AcceptConten
         "Apna option chunein:"
     )
     await _edit_or_send(callback, text, payment_options_kb(plan.id, product.id))
-    await callback.answer()
 
 
 @router.callback_query(PayPartialCD.filter())
 async def cb_pay_partial(callback: CallbackQuery, callback_data: PayPartialCD, state: FSMContext):
+    await _ack(callback)
     plan = await get_plan(callback_data.plan_id)
     if not plan:
-        await callback.answer("Plan not found.", show_alert=True)
+        await _ack(callback, "Plan not found.", show_alert=True)
         return
     total_files = len(plan.delivery_items or [])
     if total_files <= 0:
-        await callback.answer("No files available.", show_alert=True)
+        await _ack(callback, "No files available.", show_alert=True)
         return
     per_file = plan.price / total_files
     await state.set_state(PaymentStates.waiting_file_range)
@@ -239,7 +247,6 @@ async def cb_pay_partial(callback: CallbackQuery, callback_data: PayPartialCD, s
         f"Price per file: ~Rs {per_file:.0f}",
         None,
     )
-    await callback.answer()
 
 
 @router.message(PaymentStates.waiting_file_range, F.text)
@@ -283,42 +290,43 @@ async def handle_partial_range(message: Message, state: FSMContext):
 
 @router.callback_query(PlansCD.filter())
 async def cb_plans(callback: CallbackQuery, callback_data: PlansCD):
+    await _ack(callback)
     try:
         product_id = callback_data.product_id
         product = await get_product(product_id)
     except Exception as e:
         logger.error("DB Error in plans: %s", e)
-        await callback.answer("Something went wrong. Please try again or contact support.", show_alert=True)
+        await _ack(callback, "Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     if not product or not product.plans:
-        await callback.answer("No plans available.", show_alert=True)
+        await _ack(callback, "No plans available.", show_alert=True)
         return
 
     active_plans = [p for p in product.plans if p.is_active]
     if not active_plans:
-        await callback.answer("No active plans.", show_alert=True)
+        await _ack(callback, "No active plans.", show_alert=True)
         return
 
     text = f"<b>{product.name}</b>\n\nSelect a plan:"
     kb = plans_kb(active_plans, product_id)
 
     await _edit_or_send(callback, text, kb)
-    await callback.answer()
 
 
 @router.callback_query(SelectPlanCD.filter())
 async def cb_select_plan(callback: CallbackQuery, callback_data: SelectPlanCD, state: FSMContext):
+    await _ack(callback)
     try:
         plan_id = callback_data.plan_id
         plan = await get_plan(plan_id)
     except Exception as e:
         logger.error("DB Error in select_plan: %s", e)
-        await callback.answer("Something went wrong. Please try again or contact support.", show_alert=True)
+        await _ack(callback, "Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     if not plan:
-        await callback.answer("Plan not found.", show_alert=True)
+        await _ack(callback, "Plan not found.", show_alert=True)
         return
 
     text = (
@@ -331,18 +339,17 @@ async def cb_select_plan(callback: CallbackQuery, callback_data: SelectPlanCD, s
     kb = order_confirm_kb(plan_id)
 
     await _edit_or_send(callback, text, kb)
-    await callback.answer()
 
 
 @router.callback_query(F.data == "search_products")
 async def cb_search_products(callback: CallbackQuery, state: FSMContext):
+    await _ack(callback)
     await state.set_state(ProductSearchStates.waiting_query)
     await _edit_or_send(
         callback,
         "<b>Search Content</b>\n\nEnter the name or keywords of the content you're looking for:",
         main_menu_kb(),
     )
-    await callback.answer()
 
 
 @router.message(ProductSearchStates.waiting_query, F.text)

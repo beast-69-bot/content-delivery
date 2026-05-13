@@ -24,6 +24,13 @@ STATUS_TEXT = {
 }
 
 
+async def _ack(callback: CallbackQuery, *args, **kwargs) -> None:
+    try:
+        await callback.answer(*args, **kwargs)
+    except Exception:
+        pass
+
+
 async def _edit_or_send(callback: CallbackQuery, text: str, reply_markup):
     try:
         await callback.message.edit_text(text, reply_markup=reply_markup)
@@ -39,6 +46,8 @@ async def _edit_or_send(callback: CallbackQuery, text: str, reply_markup):
 @router.callback_query(F.data == "my_orders")
 async def show_orders(event: Message | CallbackQuery):
     user_id = event.from_user.id
+    if isinstance(event, CallbackQuery):
+        await _ack(event)
     orders = await get_user_orders(user_id)
 
     if not orders:
@@ -50,18 +59,18 @@ async def show_orders(event: Message | CallbackQuery):
 
     if isinstance(event, CallbackQuery):
         await _edit_or_send(event, text, kb)
-        await event.answer()
     else:
         await event.answer(text, reply_markup=kb)
 
 
 @router.callback_query(OrderDetailCD.filter())
 async def order_detail(callback: CallbackQuery, callback_data: OrderDetailCD):
+    await _ack(callback)
     order_id = callback_data.order_id
     order = await get_order(order_id)
 
     if not order:
-        await callback.answer("Order not found.", show_alert=True)
+        await _ack(callback, "Order not found.", show_alert=True)
         return
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -96,4 +105,3 @@ async def order_detail(callback: CallbackQuery, callback_data: OrderDetailCD):
         text += f"\n❌ Reject reason: {order.reject_reason}"
 
     await _edit_or_send(callback, text, builder.as_markup())
-    await callback.answer()

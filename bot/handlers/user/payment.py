@@ -36,6 +36,13 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+async def _ack(callback: CallbackQuery, *args, **kwargs) -> None:
+    try:
+        await callback.answer(*args, **kwargs)
+    except Exception:
+        pass
+
+
 async def _delete_order_flow_messages(bot: Bot, order_id: str) -> None:
     for item in await get_order_flow_messages(order_id):
         try:
@@ -235,11 +242,13 @@ async def _create_and_start_payment(
     selected_range: str | None = None,
     redelivery_of: str | None = None,
 ) -> None:
+    await _ack(callback, "Processing...")
     user_id = callback.from_user.id
     try:
         pending = await count_pending_orders(user_id)
         if pending >= settings.MAX_PENDING_ORDERS:
-            await callback.answer(
+            await _ack(
+                callback,
                 f"⚠️ You already have {pending} pending orders.\n"
                 "Please complete or wait for them to expire.",
                 show_alert=True,
@@ -259,11 +268,11 @@ async def _create_and_start_payment(
         )
         await sync_order_feed(bot, order.order_id)
     except ValueError as e:
-        await callback.answer(str(e), show_alert=True)
+        await _ack(callback, str(e), show_alert=True)
         return
     except Exception as e:
         logger.error(f"Error creating order: {e}")
-        await callback.answer("⚠️ Something went wrong. Please try again or contact support.", show_alert=True)
+        await _ack(callback, "⚠️ Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     gateway = (getattr(bot_settings, "payment_gateway", settings.PAYMENT_GATEWAY) or "manual").lower()
@@ -276,20 +285,20 @@ async def _create_and_start_payment(
 @router.callback_query(PayFullCD.filter())
 async def cb_pay_full(callback: CallbackQuery, callback_data: PayFullCD, bot: Bot, dispatcher: Dispatcher | None = None):
     await _create_and_start_payment(callback, bot, dispatcher, callback_data.plan_id)
-    await callback.answer()
 
 
 @router.callback_query(ConfirmPartialCD.filter())
 async def cb_confirm_partial(callback: CallbackQuery, callback_data: ConfirmPartialCD, bot: Bot, dispatcher: Dispatcher | None = None):
+    await _ack(callback, "Processing...")
     plan = await get_plan(callback_data.plan_id)
     if not plan:
-        await callback.answer("Plan not found.", show_alert=True)
+        await _ack(callback, "Plan not found.", show_alert=True)
         return
     total_files = len(plan.delivery_items or [])
     start = callback_data.start
     end = callback_data.end
     if start < 1 or end < start or end > total_files:
-        await callback.answer("Invalid file range.", show_alert=True)
+        await _ack(callback, "Invalid file range.", show_alert=True)
         return
     selected_items = list(plan.delivery_items or [])[start - 1:end]
     selected_count = end - start + 1
@@ -304,24 +313,24 @@ async def cb_confirm_partial(callback: CallbackQuery, callback_data: ConfirmPart
         delivery_items=selected_items,
         selected_range=f"{start}-{end}",
     )
-    await callback.answer()
 
 
 @router.callback_query(RedeliverOrderCD.filter())
 async def cb_redeliver_order(callback: CallbackQuery, callback_data: RedeliverOrderCD, bot: Bot, dispatcher: Dispatcher | None = None):
+    await _ack(callback, "Processing...")
     original = await get_order(callback_data.order_id)
     if not original or original.user_id != callback.from_user.id:
-        await callback.answer("Order not found.", show_alert=True)
+        await _ack(callback, "Order not found.", show_alert=True)
         return
     if original.status != OrderStatus.delivered:
-        await callback.answer("Only delivered orders can be redelivered.", show_alert=True)
+        await _ack(callback, "Only delivered orders can be redelivered.", show_alert=True)
         return
     if not original.plan:
-        await callback.answer("Original plan not found.", show_alert=True)
+        await _ack(callback, "Original plan not found.", show_alert=True)
         return
     delivery_items = list(original.delivery_items or original.plan.delivery_items or [])
     if not delivery_items:
-        await callback.answer("No delivery files found for this order.", show_alert=True)
+        await _ack(callback, "No delivery files found for this order.", show_alert=True)
         return
 
     bot_settings = await get_settings()
@@ -336,23 +345,23 @@ async def cb_redeliver_order(callback: CallbackQuery, callback_data: RedeliverOr
         selected_range=original.selected_range,
         redelivery_of=original.order_id,
     )
-    await callback.answer()
 
 
 @router.callback_query(DeliverNowCD.filter())
 async def cb_deliver_now(callback: CallbackQuery, callback_data: DeliverNowCD, bot: Bot) -> None:
+    await _ack(callback, "Checking order...")
     order = await get_order(callback_data.order_id)
     if not order or order.user_id != callback.from_user.id:
-        await callback.answer("Order not found.", show_alert=True)
+        await _ack(callback, "Order not found.", show_alert=True)
         return
     if order.status != OrderStatus.paid:
-        await callback.answer("This order is not ready for delivery.", show_alert=True)
+        await _ack(callback, "This order is not ready for delivery.", show_alert=True)
         return
     if not order.requirements_received:
-        await callback.answer("Required details pending hain.", show_alert=True)
+        await _ack(callback, "Required details pending hain.", show_alert=True)
         return
 
-    await callback.answer("Delivering files...", show_alert=False)
+    await _ack(callback, "Delivering files...", show_alert=False)
     delivered = await auto_deliver_order(bot, order.order_id, admin_id=0)
     await sync_order_feed(bot, order.order_id)
     if delivered:
@@ -382,13 +391,15 @@ async def cb_confirm_order(
     bot: Bot,
     dispatcher: Dispatcher | None = None,
 ) -> None:
+    await _ack(callback, "Processing...")
     plan_id = callback_data.plan_id
     user_id = callback.from_user.id
 
     try:
         pending = await count_pending_orders(user_id)
         if pending >= settings.MAX_PENDING_ORDERS:
-            await callback.answer(
+            await _ack(
+                callback,
                 f"⚠️ You already have {pending} pending orders.\n"
                 "Please complete or wait for them to expire.",
                 show_alert=True,
@@ -400,11 +411,11 @@ async def cb_confirm_order(
         order = await create_order(user_id=user_id, plan_id=plan_id, upi_id=upi_id)
         await sync_order_feed(bot, order.order_id)
     except ValueError as e:
-        await callback.answer(str(e), show_alert=True)
+        await _ack(callback, str(e), show_alert=True)
         return
     except Exception as e:
         logger.error(f"Error creating order: {e}")
-        await callback.answer("⚠️ Something went wrong. Please try again or contact support.", show_alert=True)
+        await _ack(callback, "⚠️ Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     gateway = (getattr(bot_settings, "payment_gateway", settings.PAYMENT_GATEWAY) or "manual").lower()
@@ -413,7 +424,7 @@ async def cb_confirm_order(
     else:
         await _handle_manual_payment(callback, bot, order, bot_settings)
     try:
-        await callback.answer()
+        await _ack(callback)
     except Exception:
         pass
     return
@@ -451,7 +462,7 @@ async def _handle_manual_payment(callback: CallbackQuery, bot: Bot, order: Order
         reply_markup=kb,
     )
     await add_order_flow_message(order.order_id, order.user_id, payment_message.message_id)
-    await callback.answer()
+    await _ack(callback)
 
 
 async def _handle_xwallet_payment(
@@ -461,6 +472,7 @@ async def _handle_xwallet_payment(
     order: Order,
 ) -> None:
     """XWallet flow: create payment, send payment-link CTA, and start polling."""
+    await _ack(callback)
     loading = await callback.message.answer("⏳ Payment link generate ho raha hai...")
 
     try:
@@ -578,16 +590,17 @@ async def _poll_and_complete(
 
 @router.callback_query(UploadScreenshotCD.filter())
 async def cb_upload_screenshot(callback: CallbackQuery, callback_data: UploadScreenshotCD, state: FSMContext) -> None:
+    await _ack(callback, "Processing...")
     try:
         order_id = callback_data.order_id
         order = await get_order(order_id)
     except Exception as e:
         logger.error(f"Error getting order for screenshot upload: {e}")
-        await callback.answer("⚠️ Something went wrong. Please try again or contact support.", show_alert=True)
+        await _ack(callback, "⚠️ Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     if not order or order.status != OrderStatus.pending:
-        await callback.answer("Order not found or already processed.", show_alert=True)
+        await _ack(callback, "Order not found or already processed.", show_alert=True)
         return
 
     await state.set_state(PaymentStates.waiting_screenshot)
@@ -603,7 +616,7 @@ async def cb_upload_screenshot(callback: CallbackQuery, callback_data: UploadScr
         reply_markup=cancel_screenshot_kb(order_id),
     )
     await add_order_flow_message(order_id, callback.from_user.id, prompt.message_id)
-    await callback.answer()
+    await _ack(callback)
 
 
 @router.message(PaymentStates.waiting_screenshot, F.photo)
@@ -695,9 +708,10 @@ async def handle_customer_bot_token(message: Message, state: FSMContext) -> None
 
 @router.callback_query(ConfirmCustomerBotCD.filter())
 async def cb_confirm_customer_bot_started(callback: CallbackQuery, callback_data: ConfirmCustomerBotCD, bot: Bot) -> None:
+    await _ack(callback, "Checking delivery...")
     order = await get_order(callback_data.order_id)
     if not order or order.status != OrderStatus.paid or not order.customer_bot_token:
-        await callback.answer("Order is not ready for bot delivery.", show_alert=True)
+        await _ack(callback, "Order is not ready for bot delivery.", show_alert=True)
         return
 
     delivered = await auto_deliver_order(bot, order.order_id, admin_id=0)
@@ -707,13 +721,13 @@ async def cb_confirm_customer_bot_started(callback: CallbackQuery, callback_data
             f"✅ Order <b>#{order.order_id}</b> delivered from @{order.customer_bot_username}.",
             reply_markup=main_menu_kb(),
         )
-        await callback.answer("Delivered.", show_alert=True)
+        await _ack(callback, "Delivered.", show_alert=True)
         return
 
     await callback.message.answer(
         "Delivery failed. Please make sure you opened your bot and pressed /start, then press OK again."
     )
-    await callback.answer("Start your bot first, then press OK again.", show_alert=True)
+    await _ack(callback, "Start your bot first, then press OK again.", show_alert=True)
 
 
 @router.message(PendingRequirementsFilter(), F.text)
@@ -723,6 +737,7 @@ async def handle_requirements_response_fallback(message: Message, state: FSMCont
 
 @router.callback_query(CancelOrderCD.filter())
 async def cb_cancel_order(callback: CallbackQuery, callback_data: CancelOrderCD, state: FSMContext) -> None:
+    await _ack(callback, "Cancelling...")
     try:
         order_id = callback_data.order_id
         order = await get_order(order_id)
@@ -732,7 +747,7 @@ async def cb_cancel_order(callback: CallbackQuery, callback_data: CancelOrderCD,
             await sync_order_feed(callback.bot, order_id)
     except Exception as e:
         logger.error(f"Error cancelling order: {e}")
-        await callback.answer("⚠️ Something went wrong. Please try again or contact support.", show_alert=True)
+        await _ack(callback, "⚠️ Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     await state.clear()
@@ -747,7 +762,7 @@ async def cb_cancel_order(callback: CallbackQuery, callback_data: CancelOrderCD,
             "❌ Order cancelled.\n\nYou can create a new order anytime.",
             reply_markup=main_menu_kb(),
         )
-    await callback.answer()
+    await _ack(callback)
 
 
 @router.message(PaymentStates.waiting_screenshot)

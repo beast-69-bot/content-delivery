@@ -9,6 +9,7 @@ import logging
 import re
 from datetime import datetime, timedelta
 from typing import Any, Optional
+from time import monotonic
 
 from pymongo import ReturnDocument
 
@@ -18,6 +19,34 @@ from database.models import Admin, AdminRole, AuditLog, BotSettings, Order, Orde
 from utils.order_id import generate_order_id
 
 logger = logging.getLogger(__name__)
+
+_CACHE_TTL_SECONDS = 10.0
+_cache: dict[str, tuple[float, Any]] = {}
+
+
+def _cache_get(key: str):
+    item = _cache.get(key)
+    if not item:
+        return None
+    expires_at, value = item
+    if expires_at <= monotonic():
+        _cache.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(key: str, value):
+    _cache[key] = (monotonic() + _CACHE_TTL_SECONDS, value)
+    return value
+
+
+def _cache_clear(prefix: str | None = None) -> None:
+    if prefix is None:
+        _cache.clear()
+        return
+    for key in list(_cache):
+        if key.startswith(prefix):
+            _cache.pop(key, None)
 
 
 def _utc_now_naive() -> datetime:
@@ -333,23 +362,32 @@ async def get_admins_by_role(*roles: AdminRole) -> list[Admin]:
 
 
 async def get_products_page(page: int = 0) -> tuple[list[Product], int]:
+    cached = _cache_get(f"products_page:{page}")
+    if cached is not None:
+        return cached
     db = get_db()
     limit = settings.PRODUCTS_PER_PAGE
     total = await db.products.count_documents({"is_active": True})
     docs = await db.products.find({"is_active": True}).sort([("sort_order", 1), ("_id", 1)]).skip(page * limit).limit(limit).to_list(length=limit)
-    return [_product_from_doc(doc) for doc in docs if doc], total
+    return _cache_set(f"products_page:{page}", ([_product_from_doc(doc) for doc in docs if doc], total))
 
 
 async def get_categories() -> list[str]:
+    cached = _cache_get("categories")
+    if cached is not None:
+        return cached
     categories = await get_db().products.distinct("category", {"is_active": True})
     clean = sorted({str(category or "General").strip() or "General" for category in categories}, key=str.casefold)
-    return clean
+    return _cache_set("categories", clean)
 
 
 async def get_products_page_by_category(category: str, page: int = 0) -> tuple[list[Product], int]:
+    normalized = (category or "General").strip() or "General"
+    cached = _cache_get(f"category_page:{normalized.casefold()}:{page}")
+    if cached is not None:
+        return cached
     db = get_db()
     limit = settings.PRODUCTS_PER_PAGE
-    normalized = (category or "General").strip() or "General"
     query = {"is_active": True, "category": normalized}
     total = await db.products.count_documents(query)
     docs = await (
@@ -359,22 +397,28 @@ async def get_products_page_by_category(category: str, page: int = 0) -> tuple[l
         .limit(limit)
         .to_list(length=limit)
     )
-    return [_product_from_doc(doc) for doc in docs if doc], total
+    return _cache_set(f"category_page:{normalized.casefold()}:{page}", ([_product_from_doc(doc) for doc in docs if doc], total))
 
 
 async def get_products_by_category(category: str) -> list[Product]:
     normalized = (category or "General").strip() or "General"
+    cached = _cache_get(f"category_products:{normalized.casefold()}")
+    if cached is not None:
+        return cached
     docs = await (
         get_db().products.find({"is_active": True, "category": normalized})
         .sort([("sort_order", 1), ("_id", 1)])
         .to_list(length=None)
     )
-    return [_product_from_doc(doc) for doc in docs if doc]
+    return _cache_set(f"category_products:{normalized.casefold()}", [_product_from_doc(doc) for doc in docs if doc])
 
 
 async def get_product(product_id: int) -> Optional[Product]:
+    cached = _cache_get(f"product:{product_id}")
+    if cached is not None:
+        return cached
     product = _product_from_doc(await get_db().products.find_one({"_id": product_id, "is_active": True}))
-    return await _attach_product_plans(product)
+    return _cache_set(f"product:{product_id}", await _attach_product_plans(product))
 
 
 async def get_all_products() -> list[Product]:
@@ -428,6 +472,7 @@ async def create_product(
             "updated_at": now,
         }
     )
+    _cache_clear()
     product = await get_product(product_id)
     if not product:
         raise RuntimeError(f"Failed to create product {product_id}")
@@ -439,11 +484,13 @@ async def update_product(product_id: int, **kwargs) -> bool:
         return True
     kwargs["updated_at"] = _utc_now_naive()
     result = await get_db().products.update_one({"_id": product_id}, {"$set": kwargs})
+    _cache_clear()
     return result.matched_count > 0
 
 
 async def delete_product(product_id: int) -> bool:
     result = await get_db().products.update_one({"_id": product_id}, {"$set": {"is_active": False, "updated_at": _utc_now_naive()}})
+    _cache_clear()
     return result.matched_count > 0
 
 
@@ -460,6 +507,7 @@ async def add_plan(product_id: int, name: str, price: float, delivery_items: lis
             "sort_order": 0,
         }
     )
+    _cache_clear()
     plan = await get_plan(plan_id)
     if not plan:
         raise RuntimeError(f"Failed to create plan {plan_id}")
@@ -482,6 +530,7 @@ async def append_delivery_items_to_product(product_id: int, delivery_items: list
 
     plan_id = int(plan_doc[0]["_id"])
     await db.plans.update_one({"_id": plan_id}, {"$push": {"delivery_items": {"$each": delivery_items}}})
+    _cache_clear()
     return _plan_from_doc(await db.plans.find_one({"_id": plan_id}))
 
 
@@ -791,7 +840,10 @@ async def get_user_orders(user_id: int) -> list[Order]:
 
 
 async def get_settings() -> BotSettings:
-    return _settings_from_doc(await get_db().bot_settings.find_one({"_id": 1}))
+    cached = _cache_get("settings")
+    if cached is not None:
+        return cached
+    return _cache_set("settings", _settings_from_doc(await get_db().bot_settings.find_one({"_id": 1})))
 
 
 async def get_setting(key: str):
@@ -805,6 +857,7 @@ async def update_setting(key: str, value) -> bool:
         {"$set": {key: value, "updated_at": _utc_now_naive()}},
         upsert=True,
     )
+    _cache_clear("settings")
     return result.matched_count > 0 or result.upserted_id is not None
 
 
