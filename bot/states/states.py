@@ -25,6 +25,7 @@ class AddProductStates(StatesGroup):
     name        = State()
     emoji       = State()
     image       = State()
+    preview_url = State()
     tagline     = State()
     description = State()
     requirements = State()

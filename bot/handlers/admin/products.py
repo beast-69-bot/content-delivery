@@ -4,6 +4,7 @@ Product admin: add, edit, delete products and plans with auto-delivery files.
 """
 
 import logging
+from urllib.parse import urlparse
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -33,6 +34,11 @@ from states.states import AddPlanStates, AddProductStates, EditProductStates
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+def _valid_preview_url(text: str) -> bool:
+    parsed = urlparse(text)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def _delivery_item_from_message(message: Message) -> dict:
@@ -74,6 +80,7 @@ def _edit_fields_kb(product_id: int):
     builder.button(text="Edit Name", callback_data="admin_edit_field:name")
     builder.button(text="Edit Tagline", callback_data="admin_edit_field:tagline")
     builder.button(text="Edit Description", callback_data="admin_edit_field:description")
+    builder.button(text="Edit Preview Link", callback_data="admin_edit_field:preview_url")
     builder.button(text="Edit Requirements", callback_data="admin_edit_field:requirements_text")
     builder.button(text="Edit Category", callback_data="admin_edit_field:category")
     builder.button(text="Toggle Active", callback_data="admin_edit_field:is_active")
@@ -108,6 +115,7 @@ async def cb_product_actions(callback: CallbackQuery, callback_data: AdminProduc
         f"{product.emoji or '*'} <b>{product.name}</b>\n"
         f"Category: {product.category}\n"
         f"Status: {'Active' if product.is_active else 'Inactive'}\n\n"
+        f"<b>Preview:</b> {product.preview_url or 'Not set'}\n\n"
         f"<b>Requirements:</b>\n{product.requirements_text or 'No extra requirements'}\n\n"
         f"<b>Plans:</b>\n{plans_text}"
     )
@@ -158,6 +166,7 @@ async def cb_choose_edit_field(callback: CallbackQuery, state: FSMContext):
         "name": "new content name",
         "tagline": "new tagline",
         "description": "new description",
+        "preview_url": "new preview link (/skip to clear)",
         "requirements_text": "new requirements text (/skip to clear)",
         "category": "new category",
     }
@@ -182,9 +191,12 @@ async def step_edit_product_value(message: Message, state: FSMContext):
         return
 
     value = message.text.strip()
-    if field == "requirements_text" and message.text == "/skip":
+    if field in {"requirements_text", "preview_url"} and message.text == "/skip":
         value = ""
-    if not value and field != "requirements_text":
+    if field == "preview_url" and value and not _valid_preview_url(value):
+        await message.answer("Send a valid http/https preview link, or /skip to clear.")
+        return
+    if not value and field not in {"requirements_text", "preview_url"}:
         await message.answer("Value cannot be empty. Please send a valid value.")
         return
 
@@ -197,7 +209,7 @@ async def step_edit_product_value(message: Message, state: FSMContext):
 @router.callback_query(F.data == "admin_add_product", ProductAdminFilter())
 async def cb_add_product_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddProductStates.name)
-    await callback.message.answer("<b>Add New Content</b>\n\nStep 1/7: Send the <b>content name</b>:")
+    await callback.message.answer("<b>Add New Content</b>\n\nStep 1/8: Send the <b>content name</b>:")
     await callback.answer()
 
 
@@ -209,7 +221,7 @@ async def step_name(message: Message, state: FSMContext):
         return
     await state.update_data(name=name)
     await state.set_state(AddProductStates.emoji)
-    await message.answer("Step 2/7: Send a button emoji, or /skip.")
+    await message.answer("Step 2/8: Send a button emoji, or /skip.")
 
 
 @router.message(AddProductStates.emoji, ProductAdminFilter())
@@ -221,22 +233,37 @@ async def step_emoji(message: Message, state: FSMContext):
 
     await state.update_data(emoji=emoji[:8])
     await state.set_state(AddProductStates.image)
-    await message.answer("Step 3/7: Send a preview image, or /skip.")
+    await message.answer("Step 3/8: Send a preview image, or /skip.")
 
 
 @router.message(AddProductStates.image, ProductAdminFilter())
 async def step_image(message: Message, state: FSMContext):
     image_file_id = message.photo[-1].file_id if message.photo else None
     await state.update_data(image_file_id=image_file_id)
+    await state.set_state(AddProductStates.preview_url)
+    await message.answer("Step 4/8: Send preview link, or /skip.")
+
+
+@router.message(AddProductStates.preview_url, ProductAdminFilter())
+async def step_preview_url(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if text == "/skip":
+        preview_url = ""
+    elif _valid_preview_url(text):
+        preview_url = text
+    else:
+        await message.answer("Send a valid http/https preview link, or /skip.")
+        return
+    await state.update_data(preview_url=preview_url)
     await state.set_state(AddProductStates.tagline)
-    await message.answer("Step 4/7: Send a short tagline, or /skip.")
+    await message.answer("Step 5/8: Send a short tagline, or /skip.")
 
 
 @router.message(AddProductStates.tagline, ProductAdminFilter())
 async def step_tagline(message: Message, state: FSMContext):
     await state.update_data(tagline="" if message.text == "/skip" else message.text.strip())
     await state.set_state(AddProductStates.description)
-    await message.answer("Step 5/7: Send the content description:")
+    await message.answer("Step 6/8: Send the content description:")
 
 
 @router.message(AddProductStates.description, ProductAdminFilter())
@@ -244,7 +271,7 @@ async def step_description(message: Message, state: FSMContext):
     await state.update_data(description=message.text.strip())
     await state.set_state(AddProductStates.requirements)
     await message.answer(
-        "Step 6/7: Send required buyer info text, or /skip.\n"
+        "Step 7/8: Send required buyer info text, or /skip.\n"
         "For instant file delivery, usually send /skip."
     )
 
@@ -253,7 +280,7 @@ async def step_description(message: Message, state: FSMContext):
 async def step_requirements(message: Message, state: FSMContext):
     await state.update_data(requirements_text="" if message.text == "/skip" else message.text.strip())
     await state.set_state(AddProductStates.category)
-    await message.answer("Step 7/7: Send the category, for example Courses, OTT, Software. Or /skip for General.")
+    await message.answer("Step 8/8: Send the category, for example Courses, OTT, Software. Or /skip for General.")
 
 
 @router.message(AddProductStates.category, ProductAdminFilter())
@@ -362,6 +389,7 @@ async def _save_product(message: Message, state: FSMContext):
         image_file_id=data.get("image_file_id"),
         category=data.get("category", "General"),
         created_by=message.from_user.id,
+        preview_url=data.get("preview_url") or None,
     )
 
     for plan_data in data.get("plans", []):
