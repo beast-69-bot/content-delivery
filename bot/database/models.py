@@ -102,6 +102,7 @@ class Order:
     upi_id: str
     delivery_items: list[dict] = field(default_factory=list)
     selected_range: Optional[str] = None
+    redelivery_of: Optional[str] = None
     status: OrderStatus = OrderStatus.pending
     screenshot_file_id: Optional[str] = None
     requirements_text_snapshot: Optional[str] = None
@@ -129,6 +130,8 @@ class BotSettings:
     payment_timeout_minutes: int = 10
     payment_gateway: str = "manual"
     xwallet_api_key: str = ""
+    delivery_delete_minutes: int = 30
+    redelivery_price: float = 5.0
     order_feed_chat_id: Optional[str] = None
     total_earnings: float = 0.0
     welcome_message: str = "Welcome! Browse our products below."

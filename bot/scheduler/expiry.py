@@ -7,7 +7,7 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot
 
-from services.db_service import expire_old_orders
+from services.db_service import expire_old_orders, get_due_delivery_messages, mark_delivery_message_deleted
 from services.order_feed_service import sync_order_feed
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,21 @@ async def _check_expired_orders(bot: Bot) -> None:
         logger.info(f"Expired {len(expired)} orders")
 
 
+async def _delete_expired_delivery_messages(bot: Bot) -> None:
+    messages = await get_due_delivery_messages()
+    deleted = 0
+    for item in messages:
+        try:
+            await bot.delete_message(chat_id=item["user_id"], message_id=item["message_id"])
+        except Exception as e:
+            logger.debug(f"Could not delete delivery message {item}: {e}")
+        await mark_delivery_message_deleted(item["id"])
+        deleted += 1
+
+    if deleted:
+        logger.info(f"Deleted {deleted} expired delivery messages")
+
+
 async def start_scheduler(bot: Bot) -> None:
     _scheduler.add_job(
         _check_expired_orders,
@@ -43,6 +58,14 @@ async def start_scheduler(bot: Bot) -> None:
         seconds=60,
         kwargs={"bot": bot},
         id="order_expiry",
+        replace_existing=True,
+    )
+    _scheduler.add_job(
+        _delete_expired_delivery_messages,
+        trigger="interval",
+        seconds=60,
+        kwargs={"bot": bot},
+        id="delivery_message_cleanup",
         replace_existing=True,
     )
     _scheduler.start()

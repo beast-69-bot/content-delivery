@@ -77,6 +77,10 @@ class OrderDetailCD(CallbackData, prefix="order_detail"):
     order_id: str
 
 
+class RedeliverOrderCD(CallbackData, prefix="redeliver_order"):
+    order_id: str
+
+
 class AdminProductCD(CallbackData, prefix="admin_product"):
     id: int
 

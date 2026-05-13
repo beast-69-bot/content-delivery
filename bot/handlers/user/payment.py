@@ -15,7 +15,8 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from config.settings import settings
 from keyboards.keyboards import (
     cancel_screenshot_kb, customer_bot_started_kb, main_menu_kb, payment_sent_kb,
-    ConfirmCustomerBotCD, ConfirmPartialCD, OrderConfirmCD, PayFullCD, UploadScreenshotCD, CancelOrderCD
+    ConfirmCustomerBotCD, ConfirmPartialCD, OrderConfirmCD, PayFullCD, RedeliverOrderCD,
+    UploadScreenshotCD, CancelOrderCD
 )
 from services.db_service import (
     add_order_flow_message, add_payment_admin_message, approve_payment,
@@ -238,6 +239,7 @@ async def _create_and_start_payment(
     plan_name: str | None = None,
     delivery_items: list[dict] | None = None,
     selected_range: str | None = None,
+    redelivery_of: str | None = None,
 ) -> None:
     user_id = callback.from_user.id
     try:
@@ -259,6 +261,7 @@ async def _create_and_start_payment(
             plan_name=plan_name,
             delivery_items=delivery_items,
             selected_range=selected_range,
+            redelivery_of=redelivery_of,
         )
         await sync_order_feed(bot, order.order_id)
     except ValueError as e:
@@ -306,6 +309,38 @@ async def cb_confirm_partial(callback: CallbackQuery, callback_data: ConfirmPart
         plan_name=f"Files {start}-{end}",
         delivery_items=selected_items,
         selected_range=f"{start}-{end}",
+    )
+    await callback.answer()
+
+
+@router.callback_query(RedeliverOrderCD.filter())
+async def cb_redeliver_order(callback: CallbackQuery, callback_data: RedeliverOrderCD, bot: Bot, dispatcher: Dispatcher | None = None):
+    original = await get_order(callback_data.order_id)
+    if not original or original.user_id != callback.from_user.id:
+        await callback.answer("Order not found.", show_alert=True)
+        return
+    if original.status != OrderStatus.delivered:
+        await callback.answer("Only delivered orders can be redelivered.", show_alert=True)
+        return
+    if not original.plan:
+        await callback.answer("Original plan not found.", show_alert=True)
+        return
+    delivery_items = list(original.delivery_items or original.plan.delivery_items or [])
+    if not delivery_items:
+        await callback.answer("No delivery files found for this order.", show_alert=True)
+        return
+
+    bot_settings = await get_settings()
+    await _create_and_start_payment(
+        callback,
+        bot,
+        dispatcher,
+        original.plan.id,
+        amount=bot_settings.redelivery_price,
+        plan_name=f"Redelivery #{original.order_id}",
+        delivery_items=delivery_items,
+        selected_range=original.selected_range,
+        redelivery_of=original.order_id,
     )
     await callback.answer()
 

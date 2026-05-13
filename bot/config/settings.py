@@ -24,6 +24,8 @@ class Settings(BaseSettings):
 
     ORDER_EXPIRY_MINUTES: int = 10
     MAX_PENDING_ORDERS: int = 3
+    DELIVERY_DELETE_MINUTES: int = 30
+    REDELIVERY_PRICE: float = 5.0
 
     PRODUCTS_PER_PAGE: int = 5
     ORDERS_PER_PAGE: int = 8
@@ -53,6 +55,18 @@ class Settings(BaseSettings):
     def validate_max_pending(cls, v: int) -> int:
         if not (1 <= v <= 10):
             raise ValueError("MAX_PENDING_ORDERS must be between 1 and 10")
+        return v
+
+    @field_validator("DELIVERY_DELETE_MINUTES")
+    def validate_delivery_delete_minutes(cls, v: int) -> int:
+        if not (1 <= v <= 1440):
+            raise ValueError("DELIVERY_DELETE_MINUTES must be between 1 and 1440")
+        return v
+
+    @field_validator("REDELIVERY_PRICE")
+    def validate_redelivery_price(cls, v: float) -> float:
+        if v < 1:
+            raise ValueError("REDELIVERY_PRICE must be at least 1")
         return v
 
     @field_validator("MONGODB_URL")

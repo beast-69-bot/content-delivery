@@ -117,6 +117,7 @@ def _order_from_doc(doc: dict | None) -> Optional[Order]:
         upi_id=doc.get("upi_id", ""),
         delivery_items=list(doc.get("delivery_items") or []),
         selected_range=doc.get("selected_range"),
+        redelivery_of=doc.get("redelivery_of"),
         status=_as_order_status(doc.get("status")),
         screenshot_file_id=doc.get("screenshot_file_id"),
         requirements_text_snapshot=doc.get("requirements_text_snapshot"),
@@ -144,6 +145,8 @@ def _settings_from_doc(doc: dict | None) -> BotSettings:
         payment_timeout_minutes=int(payload.get("payment_timeout_minutes", settings.ORDER_EXPIRY_MINUTES)),
         payment_gateway=payload.get("payment_gateway", settings.PAYMENT_GATEWAY),
         xwallet_api_key=payload.get("xwallet_api_key", settings.XWALLET_API_KEY),
+        delivery_delete_minutes=int(payload.get("delivery_delete_minutes", settings.DELIVERY_DELETE_MINUTES)),
+        redelivery_price=float(payload.get("redelivery_price", settings.REDELIVERY_PRICE) or settings.REDELIVERY_PRICE),
         order_feed_chat_id=payload.get("order_feed_chat_id"),
         total_earnings=float(payload.get("total_earnings", 0.0) or 0.0),
         welcome_message=payload.get("welcome_message", "Welcome! Browse our products below."),
@@ -496,6 +499,7 @@ async def create_order(
     plan_name: str | None = None,
     delivery_items: list[dict] | None = None,
     selected_range: str | None = None,
+    redelivery_of: str | None = None,
 ) -> Order:
     db = get_db()
     plan = await get_plan(plan_id)
@@ -519,6 +523,7 @@ async def create_order(
         "upi_id": upi_id,
         "delivery_items": delivery_items if delivery_items is not None else list(plan.delivery_items or []),
         "selected_range": selected_range,
+        "redelivery_of": redelivery_of,
         "status": OrderStatus.pending.value,
         "screenshot_file_id": None,
         "requirements_text_snapshot": requirements_text or None,
@@ -620,6 +625,49 @@ async def mark_delivered(order_id: str, admin_id: int) -> bool:
     await db.users.update_one({"_id": order.user_id}, {"$inc": {"total_orders": 1, "total_spent": float(order.amount)}})
     await db.bot_settings.update_one({"_id": 1}, {"$inc": {"total_earnings": float(order.amount)}})
     return True
+
+
+async def add_delivery_messages(order_id: str, user_id: int, message_ids: list[int], delete_after: datetime) -> None:
+    if not message_ids:
+        return
+    now = _utc_now_naive()
+    docs = [
+        {
+            "order_id": order_id,
+            "user_id": int(user_id),
+            "message_id": int(message_id),
+            "delete_after": delete_after,
+            "deleted": False,
+            "created_at": now,
+        }
+        for message_id in message_ids
+    ]
+    await get_db().delivery_messages.insert_many(docs)
+
+
+async def get_due_delivery_messages(limit: int = 100) -> list[dict]:
+    docs = await (
+        get_db().delivery_messages.find({"deleted": False, "delete_after": {"$lte": _utc_now_naive()}})
+        .sort([("delete_after", 1), ("_id", 1)])
+        .limit(limit)
+        .to_list(length=limit)
+    )
+    return [
+        {
+            "id": doc["_id"],
+            "order_id": doc.get("order_id"),
+            "user_id": int(doc["user_id"]),
+            "message_id": int(doc["message_id"]),
+        }
+        for doc in docs
+    ]
+
+
+async def mark_delivery_message_deleted(message_id) -> None:
+    await get_db().delivery_messages.update_one(
+        {"_id": message_id},
+        {"$set": {"deleted": True, "deleted_at": _utc_now_naive()}},
+    )
 
 
 async def save_customer_requirements(order_id: str, response: str) -> bool:

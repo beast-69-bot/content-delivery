@@ -40,19 +40,23 @@ async def cb_settings(callback: CallbackQuery):
     builder.button(text="Change UPI ID", callback_data=SettingCD(key="upi_id").pack())
     builder.button(text="Change UPI Name", callback_data=SettingCD(key="upi_name").pack())
     builder.button(text="Payment Timeout", callback_data=SettingCD(key="payment_timeout_minutes").pack())
+    builder.button(text="Delivery Delete Time", callback_data=SettingCD(key="delivery_delete_minutes").pack())
+    builder.button(text="Redelivery Price", callback_data=SettingCD(key="redelivery_price").pack())
     builder.button(text="Welcome Message", callback_data=SettingCD(key="welcome_message").pack())
     builder.button(text="Switch Gateway", callback_data=SettingCD(key="payment_gateway_toggle").pack())
     builder.button(text="Set XWallet API Key", callback_data=SettingCD(key="xwallet_api_key").pack())
     builder.button(text="Set Order Feed Channel", callback_data=SettingCD(key="order_feed_chat_id").pack())
     builder.button(text="Maintenance Mode", callback_data=SettingCD(key="maintenance_toggle").pack())
     builder.button(text="Admin Panel", callback_data="admin:panel")
-    builder.adjust(2, 2, 2, 1, 1, 1)
+    builder.adjust(2, 2, 2, 2, 1, 1, 1)
 
     text = (
         "<b>Bot Settings</b>\n\n"
         f"UPI ID: <code>{s.upi_id}</code>\n"
         f"UPI Name: {s.upi_name}\n"
         f"Timeout: {s.payment_timeout_minutes} min\n"
+        f"Delivery Delete: {s.delivery_delete_minutes} min\n"
+        f"Redelivery Price: Rs {s.redelivery_price:.0f}\n"
         f"Gateway: <b>{gateway}</b>\n"
         f"XWallet Key: <code>{_mask_api_key(s.xwallet_api_key)}</code>\n"
         f"Order Feed Channel: <code>{_format_channel_id(s.order_feed_chat_id)}</code>\n"
@@ -88,6 +92,8 @@ async def cb_change_setting(callback: CallbackQuery, callback_data: SettingCD, s
         "upi_id": "Send new <b>UPI ID</b> (e.g. store@upi):",
         "upi_name": "Send new <b>UPI Name</b>:",
         "payment_timeout_minutes": "Send new <b>timeout in minutes</b> (e.g. 10):",
+        "delivery_delete_minutes": "Send delivered content auto-delete time in <b>minutes</b> (e.g. 30):",
+        "redelivery_price": "Send new <b>redelivery price</b> (e.g. 5):",
         "welcome_message": "Send new <b>welcome message</b>:",
         "xwallet_api_key": "Send new <b>XWallet API Key</b>:",
         "order_feed_chat_id": (
@@ -108,14 +114,24 @@ async def handle_setting_value(message: Message, state: FSMContext):
     key = data["setting_key"]
     value = message.text.strip()
 
-    if key == "payment_timeout_minutes":
+    if key in {"payment_timeout_minutes", "delivery_delete_minutes"}:
         try:
             value = int(value)
         except ValueError:
             await message.answer("Please send a valid number.")
             return
         if value < 1:
-            await message.answer("Timeout must be at least 1 minute.")
+            await message.answer("Value must be at least 1 minute.")
+            return
+
+    if key == "redelivery_price":
+        try:
+            value = float(value)
+        except ValueError:
+            await message.answer("Please send a valid price.")
+            return
+        if value < 1:
+            await message.answer("Redelivery price must be at least Rs 1.")
             return
 
     if key == "xwallet_api_key" and not value:

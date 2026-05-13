@@ -7,8 +7,9 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
-from keyboards.keyboards import main_menu_kb, my_orders_kb, OrderDetailCD
-from services.db_service import get_order, get_user_orders
+from database.models import OrderStatus
+from keyboards.keyboards import main_menu_kb, my_orders_kb, OrderDetailCD, RedeliverOrderCD
+from services.db_service import get_order, get_settings, get_user_orders
 
 router = Router()
 
@@ -65,6 +66,12 @@ async def order_detail(callback: CallbackQuery, callback_data: OrderDetailCD):
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
+    settings = await get_settings()
+    if order.status == OrderStatus.delivered:
+        builder.button(
+            text=f"Redeliver - Rs {settings.redelivery_price:.0f}",
+            callback_data=RedeliverOrderCD(order_id=order.order_id).pack(),
+        )
     builder.button(text="◀️ Back to Orders", callback_data="my_orders")
     builder.button(text="🏠 Main Menu",      callback_data="main_menu")
     builder.adjust(1)

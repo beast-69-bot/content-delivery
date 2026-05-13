@@ -57,6 +57,8 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.orders.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
     await db.orders.create_index([("status", ASCENDING), ("created_at", ASCENDING)])
     await db.orders.create_index([("status", ASCENDING), ("expires_at", ASCENDING)])
+    await db.delivery_messages.create_index([("deleted", ASCENDING), ("delete_after", ASCENDING)])
+    await db.delivery_messages.create_index([("order_id", ASCENDING)])
     await db.audit_logs.create_index([("admin_id", ASCENDING), ("created_at", DESCENDING)])
 
 
@@ -70,6 +72,8 @@ async def _seed_defaults(db: AsyncIOMotorDatabase) -> None:
                 "payment_timeout_minutes": settings.ORDER_EXPIRY_MINUTES,
                 "payment_gateway": settings.PAYMENT_GATEWAY,
                 "xwallet_api_key": settings.XWALLET_API_KEY,
+                "delivery_delete_minutes": settings.DELIVERY_DELETE_MINUTES,
+                "redelivery_price": settings.REDELIVERY_PRICE,
                 "order_feed_chat_id": None,
                 "total_earnings": 0.0,
                 "welcome_message": "Welcome! Select a category and browse available content below.",
