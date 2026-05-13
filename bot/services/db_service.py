@@ -358,6 +358,16 @@ async def get_products_page_by_category(category: str, page: int = 0) -> tuple[l
     return [_product_from_doc(doc) for doc in docs if doc], total
 
 
+async def get_products_by_category(category: str) -> list[Product]:
+    normalized = (category or "General").strip() or "General"
+    docs = await (
+        get_db().products.find({"is_active": True, "category": normalized})
+        .sort([("sort_order", 1), ("_id", 1)])
+        .to_list(length=None)
+    )
+    return [_product_from_doc(doc) for doc in docs if doc]
+
+
 async def get_product(product_id: int) -> Optional[Product]:
     product = _product_from_doc(await get_db().products.find_one({"_id": product_id, "is_active": True}))
     return await _attach_product_plans(product)
@@ -448,6 +458,25 @@ async def add_plan(product_id: int, name: str, price: float, delivery_items: lis
     if not plan:
         raise RuntimeError(f"Failed to create plan {plan_id}")
     return plan
+
+
+async def append_delivery_items_to_product(product_id: int, delivery_items: list[dict]) -> Plan | None:
+    if not delivery_items:
+        return None
+
+    db = get_db()
+    plan_doc = await (
+        db.plans.find({"product_id": product_id, "is_active": True})
+        .sort([("sort_order", 1), ("_id", 1)])
+        .limit(1)
+        .to_list(length=1)
+    )
+    if not plan_doc:
+        return None
+
+    plan_id = int(plan_doc[0]["_id"])
+    await db.plans.update_one({"_id": plan_id}, {"$push": {"delivery_items": {"$each": delivery_items}}})
+    return _plan_from_doc(await db.plans.find_one({"_id": plan_id}))
 
 
 async def get_plan(plan_id: int) -> Optional[Plan]:

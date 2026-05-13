@@ -8,7 +8,14 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from keyboards.keyboards import back_to_admin_kb
 from middlewares.role_filter import ProductAdminFilter
-from services.db_service import add_plan, create_product, get_categories, log_action
+from services.db_service import (
+    add_plan,
+    append_delivery_items_to_product,
+    create_product,
+    get_categories,
+    get_products_by_category,
+    log_action,
+)
 from states.states import AddContentStates
 
 logger = logging.getLogger(__name__)
@@ -20,6 +27,15 @@ def _category_kb(categories: list[str]):
     for index, category in enumerate(categories):
         builder.button(text=category, callback_data=f"addcontent:category:{index}")
     builder.button(text="Add New Category", callback_data="addcontent:category:new")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def _subcategory_kb(products):
+    builder = InlineKeyboardBuilder()
+    for index, product in enumerate(products):
+        builder.button(text=product.name, callback_data=f"addcontent:subcategory:{index}")
+    builder.button(text="Add New Subcategory", callback_data="addcontent:subcategory:new")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -110,8 +126,44 @@ async def add_content_category_button(callback: CallbackQuery, state: FSMContext
 
     await state.update_data(category=category)
     await state.set_state(AddContentStates.subcategory)
-    sent = await callback.message.answer(f"Category selected: <b>{category}</b>\n\nSend subcategory/chapter name:")
-    await _remember_messages(state, sent.message_id)
+    products = await get_products_by_category(category)
+    await state.update_data(subcategory_options=[{"id": product.id, "name": product.name} for product in products])
+    await callback.message.edit_text(
+        f"<b>{category}</b>\n\n"
+        "Choose an existing subcategory to add files into it, or add a new one:",
+        reply_markup=_subcategory_kb(products),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("addcontent:subcategory:"), AddContentStates.subcategory, ProductAdminFilter())
+async def add_content_subcategory_button(callback: CallbackQuery, state: FSMContext):
+    choice = callback.data.rsplit(":", 1)[1]
+    if choice == "new":
+        await callback.message.edit_text("Send new subcategory/chapter name:")
+        await callback.answer()
+        return
+
+    data = await state.get_data()
+    options = list(data.get("subcategory_options") or [])
+    try:
+        selected = options[int(choice)]
+    except (ValueError, IndexError):
+        await callback.answer("Subcategory selection expired. Send /addcontent again.", show_alert=True)
+        return
+
+    await state.update_data(
+        existing_product_id=int(selected["id"]),
+        name=selected["name"],
+        delivery_mode="main_bot",
+        files=[],
+    )
+    await state.set_state(AddContentStates.files)
+    await callback.message.edit_text(
+        f"Subcategory selected: <b>{selected['name']}</b>\n\n"
+        "Now send files/messages to add into this subcategory. You can upload them in bulk.\n"
+        "When all files are uploaded, send /done."
+    )
     await callback.answer()
 
 
@@ -200,31 +252,49 @@ async def add_content_done(message: Message, state: FSMContext):
         await _answer_and_remember(message, state, "Upload at least one file before /done.")
         return
 
-    product = await create_product(
-        name=data["name"],
-        emoji="*",
-        tagline=data.get("terms", ""),
-        description=data.get("notes", ""),
-        requirements_text=data.get("requirements_text") or None,
-        image_file_id=None,
-        category=data["category"],
-        created_by=message.from_user.id,
-        delivery_mode=data.get("delivery_mode", "main_bot"),
-    )
-    await add_plan(product.id, "Full Access", data["price"], files)
-    await log_action(message.from_user.id, "add_content", str(product.id), product.name)
+    existing_product_id = data.get("existing_product_id")
+    if existing_product_id:
+        plan = await append_delivery_items_to_product(int(existing_product_id), files)
+        if not plan:
+            await _answer_and_remember(message, state, "This subcategory has no active plan. Add a new subcategory instead.")
+            return
+        await log_action(message.from_user.id, "append_content", str(existing_product_id), data["name"])
+    else:
+        product = await create_product(
+            name=data["name"],
+            emoji="*",
+            tagline=data.get("terms", ""),
+            description=data.get("notes", ""),
+            requirements_text=data.get("requirements_text") or None,
+            image_file_id=None,
+            category=data["category"],
+            created_by=message.from_user.id,
+            delivery_mode=data.get("delivery_mode", "main_bot"),
+        )
+        await add_plan(product.id, "Full Access", data["price"], files)
+        await log_action(message.from_user.id, "add_content", str(product.id), product.name)
     cleanup_message_ids = list((await state.get_data()).get("cleanup_message_ids") or [])
     await state.clear()
 
-    await message.answer(
-        "<b>Subcategory Added</b>\n\n"
-        f"Category: <b>{data['category']}</b>\n"
-        f"Subcategory: <b>{data['name']}</b>\n"
-        f"Total Files: <b>{len(files)}</b>\n"
-        f"Full Price: <b>Rs {data['price']:.0f}</b>\n\n"
-        "Users can now buy full access or select a partial file range.",
-        reply_markup=back_to_admin_kb(),
-    )
+    if existing_product_id:
+        confirmation_text = (
+            "<b>Files Added</b>\n\n"
+            f"Category: <b>{data['category']}</b>\n"
+            f"Subcategory: <b>{data['name']}</b>\n"
+            f"New Files: <b>{len(files)}</b>\n"
+            f"Total Files: <b>{len(plan.delivery_items or [])}</b>\n\n"
+            "Users will now receive the updated file list."
+        )
+    else:
+        confirmation_text = (
+            "<b>Subcategory Added</b>\n\n"
+            f"Category: <b>{data['category']}</b>\n"
+            f"Subcategory: <b>{data['name']}</b>\n"
+            f"Total Files: <b>{len(files)}</b>\n"
+            f"Full Price: <b>Rs {data['price']:.0f}</b>\n\n"
+            "Users can now buy full access or select a partial file range."
+        )
+    await message.answer(confirmation_text, reply_markup=back_to_admin_kb())
     await _cleanup_add_content_messages(message, cleanup_message_ids)
 
 
