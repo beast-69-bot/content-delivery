@@ -117,7 +117,8 @@ async def auto_deliver_order(bot: Bot, order_id: str, admin_id: int = 0) -> bool
                 chat_id=order.user_id,
                 text=(
                     f"Order <b>#{order.order_id}</b> delivered successfully.\n"
-                    f"Delivered content will auto-delete after <b>{settings.delivery_delete_minutes} minutes</b>."
+                    f"Delivered content will auto-delete after <b>{settings.delivery_delete_minutes} minutes</b>.\n\n"
+                    "Warning: Please forward/share or save the content before the time limit, otherwise it will be deleted from this chat."
                 ),
             )
         return delivered
