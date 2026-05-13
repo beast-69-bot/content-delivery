@@ -169,7 +169,7 @@ async def cb_product_detail(callback: CallbackQuery, callback_data: ProductCD, s
     page = int(nav_data.get("product_page") or 0)
     category = nav_data.get("product_category") or product.category
     await state.update_data(product_page=page, product_category=category)
-    kb = content_detail_kb(product_id, page=page, category=category)
+    kb = content_detail_kb(product_id, page=page, category=category, preview_url=product.preview_url)
 
     if product.image_file_id:
         try:

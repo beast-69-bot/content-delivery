@@ -12,8 +12,10 @@ from keyboards.keyboards import (
 )
 
 
-def content_detail_kb(product_id: int, page: int, category: str | None = None) -> InlineKeyboardMarkup:
+def content_detail_kb(product_id: int, page: int, category: str | None = None, preview_url: str | None = None) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+    if preview_url:
+        builder.button(text="Preview", url=preview_url)
     builder.button(text="Accept", callback_data=AcceptContentCD(product_id=product_id).pack())
     if category:
         builder.button(text="Back", callback_data=BrowseCategoryCD(category=category, page=page).pack())

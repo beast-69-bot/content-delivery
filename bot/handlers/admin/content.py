@@ -1,4 +1,5 @@
 import logging
+from urllib.parse import urlparse
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -92,6 +93,11 @@ def _delivery_item_from_message(message: Message) -> dict:
     elif message.text:
         item.update({"send_as": "text", "text": message.text})
     return item
+
+
+def _valid_preview_url(text: str) -> bool:
+    parsed = urlparse(text)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 @router.message(Command("addcontent"), ProductAdminFilter())
@@ -218,6 +224,28 @@ async def add_content_notes(message: Message, state: FSMContext):
 async def add_content_terms(message: Message, state: FSMContext):
     await _remember_messages(state, message.message_id)
     await state.update_data(terms=message.text.strip())
+    await state.set_state(AddContentStates.preview_url)
+    await _answer_and_remember(
+        message,
+        state,
+        "Send preview link for this subcategory, or /skip.\n\n"
+        "Allowed: http:// or https:// links."
+    )
+
+
+@router.message(AddContentStates.preview_url, ProductAdminFilter())
+async def add_content_preview_url(message: Message, state: FSMContext):
+    await _remember_messages(state, message.message_id)
+    text = (message.text or "").strip()
+    if text.lower() == "/skip":
+        preview_url = None
+    elif _valid_preview_url(text):
+        preview_url = text
+    else:
+        await _answer_and_remember(message, state, "Send a valid http/https preview link, or /skip.")
+        return
+
+    await state.update_data(preview_url=preview_url)
     await state.set_state(AddContentStates.requirements)
     await _answer_and_remember(
         message,
@@ -265,6 +293,7 @@ async def add_content_done(message: Message, state: FSMContext):
             emoji="*",
             tagline=data.get("terms", ""),
             description=data.get("notes", ""),
+            preview_url=data.get("preview_url"),
             requirements_text=data.get("requirements_text") or None,
             image_file_id=None,
             category=data["category"],

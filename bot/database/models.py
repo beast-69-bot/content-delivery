@@ -66,6 +66,7 @@ class Product:
     image_file_id: Optional[str] = None
     tagline: Optional[str] = None
     description: Optional[str] = None
+    preview_url: Optional[str] = None
     requirements_text: Optional[str] = None
     delivery_mode: str = "main_bot"
     category: str = "General"

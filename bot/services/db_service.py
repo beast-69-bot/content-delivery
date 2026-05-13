@@ -77,6 +77,7 @@ def _product_from_doc(doc: dict | None) -> Optional[Product]:
         image_file_id=doc.get("image_file_id"),
         tagline=doc.get("tagline"),
         description=doc.get("description"),
+        preview_url=doc.get("preview_url"),
         requirements_text=doc.get("requirements_text"),
         delivery_mode=doc.get("delivery_mode", "main_bot"),
         category=doc.get("category", "General"),
@@ -402,6 +403,7 @@ async def create_product(
     category: str,
     created_by: int,
     delivery_mode: str = "main_bot",
+    preview_url: Optional[str] = None,
 ) -> Product:
     db = get_db()
     now = _utc_now_naive()
@@ -414,6 +416,7 @@ async def create_product(
             "image_file_id": image_file_id,
             "tagline": tagline,
             "description": description,
+            "preview_url": preview_url,
             "requirements_text": requirements_text,
             "delivery_mode": delivery_mode,
             "category": category or "General",
