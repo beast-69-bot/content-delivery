@@ -38,6 +38,13 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+async def _ack(callback: CallbackQuery, *args, **kwargs) -> None:
+    try:
+        await callback.answer(*args, **kwargs)
+    except Exception:
+        pass
+
+
 def _payment_review_text(order) -> str:
     username = order.user.username or order.user.full_name
     return (
@@ -86,11 +93,12 @@ async def _edit_payment_admin_messages(bot: Bot, order, text: str) -> None:
 
 @router.callback_query(F.data == "admin:payments", PaymentAdminFilter())
 async def cb_payments_menu(callback: CallbackQuery):
+    await _ack(callback)
     try:
         orders, total = await get_orders_by_status(OrderStatus.submitted)
     except Exception as e:
         logger.error("Error fetching payments: %s", e)
-        await callback.answer("Something went wrong. Please try again or contact support.", show_alert=True)
+        await _ack(callback, "Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     if not orders:
@@ -98,7 +106,6 @@ async def cb_payments_menu(callback: CallbackQuery):
             "<b>Payments</b>\n\nNo pending verifications.",
             reply_markup=back_to_admin_kb(),
         )
-        await callback.answer()
         return
 
     builder = InlineKeyboardBuilder()
@@ -114,20 +121,20 @@ async def cb_payments_menu(callback: CallbackQuery):
         f"<b>Pending Verifications</b> ({total})\n\nSelect to review:",
         reply_markup=builder.as_markup(),
     )
-    await callback.answer()
 
 
 @router.callback_query(ViewPaymentCD.filter(), PaymentAdminFilter())
 async def cb_view_payment(callback: CallbackQuery, callback_data: ViewPaymentCD, bot: Bot):
+    await _ack(callback)
     try:
         order = await get_order(callback_data.order_id)
     except Exception as e:
         logger.error("Error viewing payment: %s", e)
-        await callback.answer("Something went wrong. Please try again or contact support.", show_alert=True)
+        await _ack(callback, "Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     if not order or order.status != OrderStatus.submitted:
-        await callback.answer("Order not available.", show_alert=True)
+        await _ack(callback, "Order not available.", show_alert=True)
         return
 
     text = _payment_review_text(order)
@@ -144,7 +151,6 @@ async def cb_view_payment(callback: CallbackQuery, callback_data: ViewPaymentCD,
     else:
         await callback.message.edit_text(text, reply_markup=kb)
         await add_payment_admin_message(order.order_id, callback.from_user.id, callback.message.message_id, "text")
-    await callback.answer()
 
 
 @router.callback_query(ApprovePaymentCD.filter(), PaymentAdminFilter())
@@ -154,18 +160,19 @@ async def cb_approve_payment(
     bot: Bot,
     dispatcher: Dispatcher | None = None,
 ):
+    await _ack(callback, "Approving payment...")
     try:
         order_id = callback_data.order_id
         order = await get_order(order_id)
         if not order or order.status != OrderStatus.submitted:
-            await callback.answer("Order already processed.", show_alert=True)
+            await _ack(callback, "Order already processed.", show_alert=True)
             return
 
         await approve_payment(order_id, callback.from_user.id)
         await log_action(callback.from_user.id, "approve_payment", order_id)
     except Exception as e:
         logger.error("Error approving payment: %s", e)
-        await callback.answer("Something went wrong. Please try again or contact support.", show_alert=True)
+        await _ack(callback, "Something went wrong. Please try again or contact support.", show_alert=True)
         return
 
     actor_label = callback.from_user.username or callback.from_user.full_name or str(callback.from_user.id)
@@ -179,7 +186,7 @@ async def cb_approve_payment(
     from handlers.user.payment import _handle_post_payment_confirmation
 
     await _handle_post_payment_confirmation(bot, order_id, dispatcher)
-    await callback.answer("Payment approved.", show_alert=True)
+    await _ack(callback, "Payment approved.", show_alert=True)
 
 
 async def _notify_order_admins(bot: Bot, order):
@@ -236,6 +243,7 @@ async def _notify_payment_admins_status(
 
 @router.callback_query(RejectPaymentCD.filter(), PaymentAdminFilter())
 async def cb_reject_payment(callback: CallbackQuery, callback_data: RejectPaymentCD, state: FSMContext):
+    await _ack(callback)
     await state.set_state(RejectPaymentStates.waiting_reason)
     await state.update_data(order_id=callback_data.order_id)
     await callback.message.answer(
@@ -243,7 +251,6 @@ async def cb_reject_payment(callback: CallbackQuery, callback_data: RejectPaymen
         f"Order: #{callback_data.order_id}\n\n"
         "Please type the reason for rejection:"
     )
-    await callback.answer()
 
 
 @router.message(RejectPaymentStates.waiting_reason, PaymentAdminFilter())

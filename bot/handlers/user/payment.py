@@ -484,7 +484,7 @@ async def _handle_xwallet_payment(
         except Exception:
             pass
         await callback.message.answer("⚠️ Payment gateway error. Please try again.")
-        await callback.answer()
+        await _ack(callback)
         return
 
     qr_code_id = str(payment.get("qr_code_id", ""))
@@ -494,7 +494,7 @@ async def _handle_xwallet_payment(
         except Exception:
             pass
         await callback.message.answer("⚠️ Payment gateway error. Please try again.")
-        await callback.answer()
+        await _ack(callback)
         return
 
     try:
@@ -505,7 +505,7 @@ async def _handle_xwallet_payment(
     payment_link = str(payment.get("payment_link", ""))
     if not payment_link:
         await callback.message.answer("⚠️ Payment gateway error. Please try again.")
-        await callback.answer()
+        await _ack(callback)
         return
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -546,7 +546,7 @@ async def _handle_xwallet_payment(
             payment_message_id=payment_message.message_id,
         )
     )
-    await callback.answer()
+    await _ack(callback)
 
 
 async def _poll_and_complete(
