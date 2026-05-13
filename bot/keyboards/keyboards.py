@@ -73,6 +73,10 @@ class ConfirmCustomerBotCD(CallbackData, prefix="confirm_customer_bot"):
     order_id: str
 
 
+class DeliverNowCD(CallbackData, prefix="deliver_now"):
+    order_id: str
+
+
 class OrderDetailCD(CallbackData, prefix="order_detail"):
     order_id: str
 
@@ -312,6 +316,14 @@ def customer_bot_started_kb(order_id: str) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="OK, I started my bot", callback_data=ConfirmCustomerBotCD(order_id=order_id).pack())
     builder.button(text="Cancel Order", callback_data=CancelOrderCD(order_id=order_id).pack())
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def deliver_now_kb(order_id: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Deliver Now", callback_data=DeliverNowCD(order_id=order_id).pack())
+    builder.button(text="My Orders", callback_data="my_orders")
     builder.adjust(1)
     return builder.as_markup()
 

@@ -14,8 +14,8 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from config.settings import settings
 from keyboards.keyboards import (
-    cancel_screenshot_kb, customer_bot_started_kb, main_menu_kb, payment_sent_kb,
-    ConfirmCustomerBotCD, ConfirmPartialCD, OrderConfirmCD, PayFullCD, RedeliverOrderCD,
+    cancel_screenshot_kb, customer_bot_started_kb, deliver_now_kb, main_menu_kb, payment_sent_kb,
+    ConfirmCustomerBotCD, ConfirmPartialCD, DeliverNowCD, OrderConfirmCD, PayFullCD, RedeliverOrderCD,
     UploadScreenshotCD, CancelOrderCD
 )
 from services.db_service import (
@@ -139,18 +139,16 @@ async def _handle_post_payment_confirmation(
         await sync_order_feed(bot, latest_order.order_id)
         return
 
-    delivered = await auto_deliver_order(bot, latest_order.order_id, admin_id=0)
     await sync_order_feed(bot, latest_order.order_id)
-    if delivered:
-        return
-
-    from handlers.admin.payments import _notify_order_admins
-
     await bot.send_message(
         chat_id=latest_order.user_id,
-        text="Auto-delivery file is not configured correctly. Admin has been notified.",
+        text=(
+            "<b>Your order is ready</b>\n\n"
+            "Files abhi auto-send nahi hongi. Jab aap ready ho, neeche <b>Deliver Now</b> dabao.\n"
+            "Delivery ke baad content time limit ke andar auto-delete ho jayega."
+        ),
+        reply_markup=deliver_now_kb(latest_order.order_id),
     )
-    await _notify_order_admins(bot, latest_order)
 
 
 async def _process_requirements_response(message: Message, state: FSMContext, bot: Bot) -> None:
@@ -187,15 +185,11 @@ async def _process_requirements_response(message: Message, state: FSMContext, bo
         reply_markup=main_menu_kb(),
     )
 
-    latest_order = await get_order(order_id)
-    if latest_order:
-        delivered = await auto_deliver_order(bot, order_id, admin_id=0)
-        await sync_order_feed(bot, order_id)
-        if not delivered:
-            from handlers.admin.payments import _notify_order_admins
-
-            await message.answer("Auto-delivery file is not configured correctly. Admin has been notified.")
-            await _notify_order_admins(bot, latest_order)
+    await sync_order_feed(bot, order_id)
+    await message.answer(
+        "Files ready hain. Jab aap ready ho, neeche Deliver Now dabao.",
+        reply_markup=deliver_now_kb(order_id),
+    )
 
 
 async def _process_customer_bot_token(message: Message, state: FSMContext) -> None:
@@ -343,6 +337,41 @@ async def cb_redeliver_order(callback: CallbackQuery, callback_data: RedeliverOr
         redelivery_of=original.order_id,
     )
     await callback.answer()
+
+
+@router.callback_query(DeliverNowCD.filter())
+async def cb_deliver_now(callback: CallbackQuery, callback_data: DeliverNowCD, bot: Bot) -> None:
+    order = await get_order(callback_data.order_id)
+    if not order or order.user_id != callback.from_user.id:
+        await callback.answer("Order not found.", show_alert=True)
+        return
+    if order.status != OrderStatus.paid:
+        await callback.answer("This order is not ready for delivery.", show_alert=True)
+        return
+    if not order.requirements_received:
+        await callback.answer("Required details pending hain.", show_alert=True)
+        return
+
+    await callback.answer("Delivering files...", show_alert=False)
+    delivered = await auto_deliver_order(bot, order.order_id, admin_id=0)
+    await sync_order_feed(bot, order.order_id)
+    if delivered:
+        try:
+            await callback.message.edit_text(
+                f"Order <b>#{order.order_id}</b> delivery started. Files sent above.",
+                reply_markup=main_menu_kb(),
+            )
+        except Exception:
+            await callback.message.answer(
+                f"Order <b>#{order.order_id}</b> delivery started. Files sent above.",
+                reply_markup=main_menu_kb(),
+            )
+        return
+
+    from handlers.admin.payments import _notify_order_admins
+
+    await callback.message.answer("Auto-delivery file is not configured correctly. Admin has been notified.")
+    await _notify_order_admins(bot, order)
 
 
 @router.callback_query(OrderConfirmCD.filter())
