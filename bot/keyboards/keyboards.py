@@ -97,6 +97,11 @@ class AdminAddPlanCD(CallbackData, prefix="admin_add_plan"):
     product_id: int
 
 
+class AdminEditPlanPriceCD(CallbackData, prefix="admin_edit_plan_price"):
+    product_id: int
+    plan_id: int
+
+
 class AdminDeleteProductCD(CallbackData, prefix="admin_delete_product"):
     id: int
 
@@ -390,6 +395,22 @@ def admin_product_actions_kb(product_id: int) -> InlineKeyboardMarkup:
     builder.button(text="🗑 Delete", callback_data=AdminDeleteProductCD(id=product_id).pack())
     builder.button(text="⬅️ Back", callback_data="admin:products")
     builder.adjust(2, 1, 1)
+    return builder.as_markup()
+
+
+def admin_product_actions_with_plans_kb(product: Product) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✏️ Edit Product", callback_data=AdminEditProductCD(id=product.id).pack())
+    builder.button(text="➕ Add Plan", callback_data=AdminAddPlanCD(product_id=product.id).pack())
+    for plan in product.plans:
+        if plan.is_active:
+            builder.button(
+                text=f"Edit Price: {plan.name} (Rs {plan.price:.0f})",
+                callback_data=AdminEditPlanPriceCD(product_id=product.id, plan_id=plan.id).pack(),
+            )
+    builder.button(text="🗑 Delete", callback_data=AdminDeleteProductCD(id=product.id).pack())
+    builder.button(text="⬅️ Back", callback_data="admin:products")
+    builder.adjust(2, 1)
     return builder.as_markup()
 
 

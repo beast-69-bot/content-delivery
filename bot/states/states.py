@@ -40,6 +40,7 @@ class AddProductStates(StatesGroup):
 class EditProductStates(StatesGroup):
     choosing_field = State()
     new_value      = State()
+    plan_price     = State()
 
 
 class AddPlanStates(StatesGroup):

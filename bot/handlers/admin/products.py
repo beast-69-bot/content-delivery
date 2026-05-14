@@ -14,9 +14,11 @@ from keyboards.keyboards import (
     AdminAddPlanCD,
     AdminDeleteProductCD,
     AdminEditProductCD,
+    AdminEditPlanPriceCD,
     AdminProductCD,
     ConfirmDeleteProductCD,
     admin_product_actions_kb,
+    admin_product_actions_with_plans_kb,
     admin_products_kb,
     back_to_admin_kb,
 )
@@ -28,6 +30,7 @@ from services.db_service import (
     get_all_products,
     get_product,
     log_action,
+    update_plan_price,
     update_product,
 )
 from states.states import AddPlanStates, AddProductStates, EditProductStates
@@ -119,7 +122,24 @@ async def cb_product_actions(callback: CallbackQuery, callback_data: AdminProduc
         f"<b>Requirements:</b>\n{product.requirements_text or 'No extra requirements'}\n\n"
         f"<b>Plans:</b>\n{plans_text}"
     )
-    await callback.message.edit_text(text, reply_markup=admin_product_actions_kb(product.id))
+    await callback.message.edit_text(text, reply_markup=admin_product_actions_with_plans_kb(product))
+    await callback.answer()
+
+
+@router.callback_query(AdminEditPlanPriceCD.filter(), ProductAdminFilter())
+async def cb_edit_plan_price(callback: CallbackQuery, callback_data: AdminEditPlanPriceCD, state: FSMContext):
+    product = await get_product(callback_data.product_id)
+    plan = next((item for item in product.plans if item.id == callback_data.plan_id), None) if product else None
+    if not product or not plan:
+        await callback.answer("Plan not found.", show_alert=True)
+        return
+
+    await state.set_state(EditProductStates.plan_price)
+    await state.update_data(edit_product_id=product.id, edit_plan_id=plan.id)
+    await callback.message.answer(
+        f"Send new price for <b>{product.name}</b> / <b>{plan.name}</b>.\n\n"
+        f"Current price: <b>Rs {plan.price:.0f}</b>"
+    )
     await callback.answer()
 
 
@@ -204,6 +224,38 @@ async def step_edit_product_value(message: Message, state: FSMContext):
     await log_action(message.from_user.id, "edit_product", str(product_id), field)
     await state.clear()
     await message.answer("Content updated successfully.", reply_markup=admin_product_actions_kb(product_id))
+
+
+@router.message(EditProductStates.plan_price, ProductAdminFilter())
+async def step_edit_plan_price(message: Message, state: FSMContext):
+    data = await state.get_data()
+    product_id = data.get("edit_product_id")
+    plan_id = data.get("edit_plan_id")
+    if not product_id or not plan_id:
+        await state.clear()
+        await message.answer("Edit session expired.", reply_markup=back_to_admin_kb())
+        return
+
+    try:
+        price = float(message.text.strip())
+        if not (0 < price <= 99999):
+            raise ValueError
+    except ValueError:
+        await message.answer("Please send a valid positive price up to Rs 99999.")
+        return
+
+    updated = await update_plan_price(int(plan_id), price)
+    await state.clear()
+    if not updated:
+        await message.answer("Plan not found or price not updated.", reply_markup=back_to_admin_kb())
+        return
+
+    await log_action(message.from_user.id, "edit_plan_price", str(plan_id), f"Rs {price:.0f}")
+    product = await get_product(int(product_id))
+    await message.answer(
+        f"Plan price updated to <b>Rs {price:.0f}</b>.",
+        reply_markup=admin_product_actions_with_plans_kb(product) if product else back_to_admin_kb(),
+    )
 
 
 @router.callback_query(F.data == "admin_add_product", ProductAdminFilter())

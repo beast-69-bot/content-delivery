@@ -514,6 +514,12 @@ async def add_plan(product_id: int, name: str, price: float, delivery_items: lis
     return plan
 
 
+async def update_plan_price(plan_id: int, price: float) -> bool:
+    result = await get_db().plans.update_one({"_id": int(plan_id)}, {"$set": {"price": float(price)}})
+    _cache_clear()
+    return result.matched_count > 0
+
+
 async def append_delivery_items_to_product(product_id: int, delivery_items: list[dict]) -> Plan | None:
     if not delivery_items:
         return None
