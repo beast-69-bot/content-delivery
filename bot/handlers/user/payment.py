@@ -571,6 +571,7 @@ async def _poll_and_complete(
 
         if success:
             await approve_payment(order.order_id, admin_id=0)
+            await _notify_xwallet_auto_verified(bot, latest_order, qr_code_id)
             await _handle_post_payment_confirmation(bot, order.order_id, dispatcher)
             return
 
@@ -694,6 +695,33 @@ async def _notify_payment_admins(bot: Bot, order: Order, file_id: str) -> None:
             await add_payment_admin_message(order.order_id, admin.id, sent.message_id, "photo")
         except Exception as e:
             logger.warning(f"Could not notify admin {admin.id}: {e}")
+
+
+async def _notify_xwallet_auto_verified(bot: Bot, order: Order, qr_code_id: str) -> None:
+    """Notify payment admins when XWallet verifies an order automatically."""
+    try:
+        admins = await get_admins_by_role(AdminRole.payment_admin, AdminRole.super_admin, AdminRole.owner)
+    except Exception as e:
+        logger.error(f"Error getting admins for XWallet auto-verify notification: {e}")
+        return
+
+    user_label = f"@{order.user.username}" if order.user and order.user.username else (order.user.full_name if order.user else str(order.user_id))
+    text = (
+        "<b>XWallet Auto-Verified</b>\n\n"
+        f"Order: <b>#{order.order_id}</b>\n"
+        f"User: {user_label} (<code>{order.user_id}</code>)\n"
+        f"Product: {order.product_name}\n"
+        f"Plan: {order.plan_name}\n"
+        f"Amount: <b>Rs {order.amount:.0f}</b>\n"
+        f"Gateway Ref: <code>{qr_code_id}</code>\n\n"
+        "Payment XWallet se automatically verify ho gaya."
+    )
+
+    for admin in admins:
+        try:
+            await bot.send_message(chat_id=admin.id, text=text)
+        except Exception as e:
+            logger.warning(f"Could not notify admin {admin.id} about XWallet auto-verify: {e}")
 
 
 @router.message(PaymentStates.waiting_requirements, F.text)
