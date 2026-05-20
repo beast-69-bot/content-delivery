@@ -8,6 +8,7 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -87,8 +88,10 @@ async def on_shutdown(bot: Bot) -> None:
 
 
 async def main() -> None:
+    session = AiohttpSession(timeout=60)
     bot = Bot(
         token=settings.BOT_TOKEN,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 

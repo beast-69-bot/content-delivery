@@ -33,6 +33,18 @@ def _delivery_bot_token(order) -> str | None:
     return None
 
 
+async def _copy_from_source_message(bot: Bot, chat_id: int, item: dict) -> Message:
+    from_chat_id = item.get("from_chat_id")
+    message_id = item.get("message_id")
+    if from_chat_id is None or message_id is None:
+        raise ValueError("Delivery item is missing source message reference")
+    return await bot.copy_message(
+        chat_id=chat_id,
+        from_chat_id=int(from_chat_id),
+        message_id=int(message_id),
+    )
+
+
 async def _download_as_input_file(source_bot: Bot, item: dict) -> BufferedInputFile | None:
     file_id = item.get("file_id")
     if not file_id:
@@ -71,24 +83,25 @@ async def _send_item_with_main_bot(bot: Bot, chat_id: int, item: dict) -> Messag
     send_as = item.get("send_as")
     file_id = item.get("file_id")
     caption = item.get("caption")
-
-    if send_as == "text":
-        return await bot.send_message(chat_id=chat_id, text=item.get("text") or "")
-    elif send_as == "photo" and file_id:
-        return await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
-    elif send_as == "video" and file_id:
-        return await bot.send_video(chat_id=chat_id, video=file_id, caption=caption)
-    elif send_as == "audio" and file_id:
-        return await bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption)
-    elif send_as == "voice" and file_id:
-        return await bot.send_voice(chat_id=chat_id, voice=file_id)
-    elif file_id:
-        return await bot.send_document(chat_id=chat_id, document=file_id, caption=caption)
-    return await bot.copy_message(
-            chat_id=chat_id,
-            from_chat_id=int(item["from_chat_id"]),
-            message_id=int(item["message_id"]),
-    )
+    try:
+        if send_as == "text":
+            return await bot.send_message(chat_id=chat_id, text=item.get("text") or "")
+        if send_as == "photo" and file_id:
+            return await bot.send_photo(chat_id=chat_id, photo=file_id, caption=caption)
+        if send_as == "video" and file_id:
+            return await bot.send_video(chat_id=chat_id, video=file_id, caption=caption)
+        if send_as == "audio" and file_id:
+            return await bot.send_audio(chat_id=chat_id, audio=file_id, caption=caption)
+        if send_as == "voice" and file_id:
+            return await bot.send_voice(chat_id=chat_id, voice=file_id)
+        if file_id:
+            return await bot.send_document(chat_id=chat_id, document=file_id, caption=caption)
+        return await _copy_from_source_message(bot, chat_id, item)
+    except Exception:
+        # Fallback for stale/bad file_id: copy from original source message if available.
+        if file_id and item.get("from_chat_id") is not None and item.get("message_id") is not None:
+            return await _copy_from_source_message(bot, chat_id, item)
+        raise
 
 
 async def _send_delivery_item(
@@ -109,7 +122,7 @@ async def _send_delivery_item_with_retry(
     chat_id: int,
     item: dict,
     customer_bot_token: str | None,
-    attempts: int = 3,
+    attempts: int = 5,
 ) -> Message:
     for attempt in range(1, attempts + 1):
         try:
@@ -138,6 +151,7 @@ async def auto_deliver_order(bot: Bot, order_id: str, admin_id: int = 0) -> Deli
     customer_bot_token = _delivery_bot_token(order)
     delivery_bot = Bot(token=customer_bot_token) if customer_bot_token else bot
     sent_content_message_ids: list[int] = []
+    failed_count = 0
     try:
         await delivery_bot.send_message(
             chat_id=order.user_id,
@@ -149,16 +163,40 @@ async def auto_deliver_order(bot: Bot, order_id: str, admin_id: int = 0) -> Deli
             ),
         )
 
-        for item in delivery_items:
-            sent = await _send_delivery_item_with_retry(
-                bot,
-                delivery_bot,
-                order.user_id,
-                item,
-                customer_bot_token,
+        total_items = len(delivery_items)
+        for index, item in enumerate(delivery_items, start=1):
+            try:
+                sent = await _send_delivery_item_with_retry(
+                    bot,
+                    delivery_bot,
+                    order.user_id,
+                    item,
+                    customer_bot_token,
+                )
+                sent_content_message_ids.append(sent.message_id)
+                # Keep a steady pause and a wider pause every 10 sends to reduce flood failures on large batches.
+                if index % 10 == 0:
+                    await asyncio.sleep(2.0)
+                else:
+                    await asyncio.sleep(0.7)
+            except Exception as item_error:
+                failed_count += 1
+                logger.warning(
+                    "Order %s delivery item %s/%s failed: %s",
+                    order_id,
+                    index,
+                    total_items,
+                    item_error,
+                )
+                await asyncio.sleep(1.5)
+
+        if failed_count:
+            return DeliveryResult(
+                False,
+                len(sent_content_message_ids),
+                len(delivery_items),
+                f"{failed_count} item(s) failed during delivery",
             )
-            sent_content_message_ids.append(sent.message_id)
-            await asyncio.sleep(0.35)
 
         delivered = await mark_delivered(order_id, admin_id)
         if delivered:
@@ -173,7 +211,14 @@ async def auto_deliver_order(bot: Bot, order_id: str, admin_id: int = 0) -> Deli
                     "Warning: Please forward/share or save the content before the time limit, otherwise it will be deleted from this chat."
                 ),
             )
-        return DeliveryResult(delivered, len(sent_content_message_ids), len(delivery_items))
+        if not delivered:
+            return DeliveryResult(
+                False,
+                len(sent_content_message_ids),
+                len(delivery_items),
+                "Order status update failed",
+            )
+        return DeliveryResult(True, len(sent_content_message_ids), len(delivery_items))
     except Exception as e:
         logger.warning("Auto delivery failed for order %s: %s", order_id, e)
         return DeliveryResult(False, len(sent_content_message_ids), len(delivery_items), str(e))
