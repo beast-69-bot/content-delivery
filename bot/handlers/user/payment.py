@@ -379,7 +379,13 @@ async def cb_deliver_now(callback: CallbackQuery, callback_data: DeliverNowCD, b
 
     from handlers.admin.payments import _notify_order_admins
 
-    await callback.message.answer("Auto-delivery file is not configured correctly. Admin has been notified.")
+    if delivered.sent_count:
+        await callback.message.answer(
+            "Delivery was interrupted after sending "
+            f"{delivered.sent_count}/{delivered.total_count} file(s). Admin has been notified."
+        )
+    else:
+        await callback.message.answer("Auto-delivery file is not configured correctly. Admin has been notified.")
     await _notify_order_admins(bot, order)
 
 
@@ -752,9 +758,18 @@ async def cb_confirm_customer_bot_started(callback: CallbackQuery, callback_data
         await _ack(callback, "Delivered.", show_alert=True)
         return
 
-    await callback.message.answer(
-        "Delivery failed. Please make sure you opened your bot and pressed /start, then press OK again."
-    )
+    if delivered.sent_count:
+        from handlers.admin.payments import _notify_order_admins
+
+        await callback.message.answer(
+            "Delivery was interrupted after sending "
+            f"{delivered.sent_count}/{delivered.total_count} file(s). Admin has been notified."
+        )
+        await _notify_order_admins(bot, order)
+    else:
+        await callback.message.answer(
+            "Delivery failed. Please make sure you opened your bot and pressed /start, then press OK again."
+        )
     await _ack(callback, "Start your bot first, then press OK again.", show_alert=True)
 
 

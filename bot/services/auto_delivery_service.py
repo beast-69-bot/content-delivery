@@ -3,16 +3,30 @@ Auto delivery helpers for paid orders.
 """
 
 import logging
+import asyncio
+from dataclasses import dataclass
 from io import BytesIO
 from datetime import datetime, timedelta
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.types import BufferedInputFile, Message
 
 from database.models import OrderStatus
 from services.db_service import add_delivery_messages, get_order, get_settings, mark_delivered
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DeliveryResult:
+    delivered: bool
+    sent_count: int = 0
+    total_count: int = 0
+    error: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.delivered
 
 
 def _delivery_bot_token(order) -> str | None:
@@ -77,15 +91,49 @@ async def _send_item_with_main_bot(bot: Bot, chat_id: int, item: dict) -> Messag
     )
 
 
-async def auto_deliver_order(bot: Bot, order_id: str, admin_id: int = 0) -> bool:
+async def _send_delivery_item(
+    bot: Bot,
+    delivery_bot: Bot,
+    chat_id: int,
+    item: dict,
+    customer_bot_token: str | None,
+) -> Message:
+    if customer_bot_token:
+        return await _send_item_with_customer_bot(bot, delivery_bot, chat_id, item)
+    return await _send_item_with_main_bot(bot, chat_id, item)
+
+
+async def _send_delivery_item_with_retry(
+    bot: Bot,
+    delivery_bot: Bot,
+    chat_id: int,
+    item: dict,
+    customer_bot_token: str | None,
+    attempts: int = 3,
+) -> Message:
+    for attempt in range(1, attempts + 1):
+        try:
+            return await _send_delivery_item(bot, delivery_bot, chat_id, item, customer_bot_token)
+        except TelegramRetryAfter as e:
+            if attempt >= attempts:
+                raise
+            await asyncio.sleep(float(e.retry_after) + 1)
+        except Exception:
+            if attempt >= attempts:
+                raise
+            await asyncio.sleep(attempt)
+    raise RuntimeError("Delivery retry loop exhausted")
+
+
+async def auto_deliver_order(bot: Bot, order_id: str, admin_id: int = 0) -> DeliveryResult:
     order = await get_order(order_id)
     if not order or order.status != OrderStatus.paid or not order.plan:
-        return False
+        return DeliveryResult(False)
 
     delivery_items = list(order.delivery_items or order.plan.delivery_items or [])
     if not delivery_items:
         logger.warning("Order %s has no delivery items configured", order_id)
-        return False
+        return DeliveryResult(False)
 
     customer_bot_token = _delivery_bot_token(order)
     delivery_bot = Bot(token=customer_bot_token) if customer_bot_token else bot
@@ -102,11 +150,15 @@ async def auto_deliver_order(bot: Bot, order_id: str, admin_id: int = 0) -> bool
         )
 
         for item in delivery_items:
-            if customer_bot_token:
-                sent = await _send_item_with_customer_bot(bot, delivery_bot, order.user_id, item)
-            else:
-                sent = await _send_item_with_main_bot(bot, order.user_id, item)
+            sent = await _send_delivery_item_with_retry(
+                bot,
+                delivery_bot,
+                order.user_id,
+                item,
+                customer_bot_token,
+            )
             sent_content_message_ids.append(sent.message_id)
+            await asyncio.sleep(0.35)
 
         delivered = await mark_delivered(order_id, admin_id)
         if delivered:
@@ -121,10 +173,10 @@ async def auto_deliver_order(bot: Bot, order_id: str, admin_id: int = 0) -> bool
                     "Warning: Please forward/share or save the content before the time limit, otherwise it will be deleted from this chat."
                 ),
             )
-        return delivered
+        return DeliveryResult(delivered, len(sent_content_message_ids), len(delivery_items))
     except Exception as e:
         logger.warning("Auto delivery failed for order %s: %s", order_id, e)
-        return False
+        return DeliveryResult(False, len(sent_content_message_ids), len(delivery_items), str(e))
     finally:
         if customer_bot_token:
             await delivery_bot.session.close()
