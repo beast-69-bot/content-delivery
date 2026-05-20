@@ -102,6 +102,21 @@ class AdminEditPlanPriceCD(CallbackData, prefix="admin_edit_plan_price"):
     plan_id: int
 
 
+class AdminAddPlanFilesCD(CallbackData, prefix="admin_add_plan_files"):
+    product_id: int
+    plan_id: int
+
+
+class AdminClearPlanFilesCD(CallbackData, prefix="admin_clear_plan_files"):
+    product_id: int
+    plan_id: int
+
+
+class ConfirmClearPlanFilesCD(CallbackData, prefix="confirm_clear_plan_files"):
+    product_id: int
+    plan_id: int
+
+
 class AdminDeleteProductCD(CallbackData, prefix="admin_delete_product"):
     id: int
 
@@ -407,6 +422,14 @@ def admin_product_actions_with_plans_kb(product: Product) -> InlineKeyboardMarku
             builder.button(
                 text=f"Edit Price: {plan.name} (Rs {plan.price:.0f})",
                 callback_data=AdminEditPlanPriceCD(product_id=product.id, plan_id=plan.id).pack(),
+            )
+            builder.button(
+                text=f"Add Files: {plan.name}",
+                callback_data=AdminAddPlanFilesCD(product_id=product.id, plan_id=plan.id).pack(),
+            )
+            builder.button(
+                text=f"Delete All Files: {plan.name}",
+                callback_data=AdminClearPlanFilesCD(product_id=product.id, plan_id=plan.id).pack(),
             )
     builder.button(text="🗑 Delete", callback_data=AdminDeleteProductCD(id=product.id).pack())
     builder.button(text="⬅️ Back", callback_data="admin:products")

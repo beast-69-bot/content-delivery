@@ -3,7 +3,9 @@ handlers/admin/products.py
 Product admin: add, edit, delete products and plans with auto-delivery files.
 """
 
+import asyncio
 import logging
+from collections import defaultdict
 from urllib.parse import urlparse
 
 from aiogram import F, Router
@@ -12,10 +14,13 @@ from aiogram.types import CallbackQuery, Message
 
 from keyboards.keyboards import (
     AdminAddPlanCD,
+    AdminAddPlanFilesCD,
+    AdminClearPlanFilesCD,
     AdminDeleteProductCD,
     AdminEditProductCD,
     AdminEditPlanPriceCD,
     AdminProductCD,
+    ConfirmClearPlanFilesCD,
     ConfirmDeleteProductCD,
     admin_product_actions_kb,
     admin_product_actions_with_plans_kb,
@@ -25,6 +30,8 @@ from keyboards.keyboards import (
 from middlewares.role_filter import ProductAdminFilter
 from services.db_service import (
     add_plan,
+    append_delivery_items_to_plan,
+    clear_plan_delivery_items,
     create_product,
     delete_product,
     get_all_products,
@@ -37,6 +44,7 @@ from states.states import AddPlanStates, AddProductStates, EditProductStates
 
 logger = logging.getLogger(__name__)
 router = Router()
+_upload_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 def _valid_preview_url(text: str) -> bool:
@@ -258,6 +266,131 @@ async def step_edit_plan_price(message: Message, state: FSMContext):
     )
 
 
+@router.callback_query(AdminAddPlanFilesCD.filter(), ProductAdminFilter())
+async def cb_add_plan_files(callback: CallbackQuery, callback_data: AdminAddPlanFilesCD, state: FSMContext):
+    product = await get_product(callback_data.product_id)
+    plan = next((item for item in product.plans if item.id == callback_data.plan_id), None) if product else None
+    if not product or not plan:
+        await callback.answer("Plan not found.", show_alert=True)
+        return
+
+    await state.set_state(EditProductStates.plan_file_count)
+    await state.update_data(
+        edit_product_id=product.id,
+        edit_plan_id=plan.id,
+        edit_plan_name=plan.name,
+        edit_plan_files=[],
+    )
+    await callback.message.answer(
+        f"How many files/messages do you want to add to <b>{product.name}</b> / <b>{plan.name}</b>?\n\n"
+        f"Current files: <b>{len(plan.delivery_items or [])}</b>\n"
+        "Enter 1 to 500:"
+    )
+    await callback.answer()
+
+
+@router.message(EditProductStates.plan_file_count, ProductAdminFilter())
+async def step_edit_plan_file_count(message: Message, state: FSMContext):
+    try:
+        count = int(message.text.strip())
+        assert 1 <= count <= 500
+    except (ValueError, AssertionError):
+        await message.answer("Please enter a valid number between 1 and 500.")
+        return
+
+    await state.update_data(edit_plan_file_count=count, edit_plan_files=[])
+    await state.set_state(EditProductStates.plan_file)
+    await message.answer(
+        "Send delivery file/message 1 now.\n"
+        "Document, video, photo, audio, text, or any copyable Telegram message is supported."
+    )
+
+
+@router.message(EditProductStates.plan_file, ProductAdminFilter())
+async def step_edit_plan_file(message: Message, state: FSMContext):
+    async with _upload_locks[message.from_user.id]:
+        data = await state.get_data()
+        files = list(data.get("edit_plan_files") or [])
+        files.append(_delivery_item_from_message(message))
+
+        file_count = int(data.get("edit_plan_file_count") or 1)
+        if len(files) < file_count:
+            await state.update_data(edit_plan_files=files)
+            if len(files) == 1 or len(files) % 10 == 0:
+                await message.answer(
+                    f"Saved {len(files)}/{file_count}. Send delivery file/message {len(files) + 1}:"
+                )
+            return
+
+        product_id = int(data["edit_product_id"])
+        plan_id = int(data["edit_plan_id"])
+        plan_name = data.get("edit_plan_name", "plan")
+        plan = await append_delivery_items_to_plan(plan_id, files)
+        await state.clear()
+
+    if not plan:
+        await message.answer("Plan not found or files were not added.", reply_markup=back_to_admin_kb())
+        return
+
+    await log_action(message.from_user.id, "add_plan_files", str(plan_id), f"{len(files)} file(s)")
+    product = await get_product(product_id)
+    await message.answer(
+        f"Added <b>{len(files)}</b> file(s) to <b>{plan_name}</b>.\n"
+        f"Total files now: <b>{len(plan.delivery_items or [])}</b>",
+        reply_markup=admin_product_actions_with_plans_kb(product) if product else back_to_admin_kb(),
+    )
+
+
+@router.callback_query(AdminClearPlanFilesCD.filter(), ProductAdminFilter())
+async def cb_clear_plan_files(callback: CallbackQuery, callback_data: AdminClearPlanFilesCD):
+    product = await get_product(callback_data.product_id)
+    plan = next((item for item in product.plans if item.id == callback_data.plan_id), None) if product else None
+    if not product or not plan:
+        await callback.answer("Plan not found.", show_alert=True)
+        return
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="Yes, Delete All Files",
+        callback_data=ConfirmClearPlanFilesCD(product_id=product.id, plan_id=plan.id).pack(),
+    )
+    builder.button(text="Cancel", callback_data=AdminProductCD(id=product.id).pack())
+    builder.adjust(1)
+
+    await callback.message.edit_text(
+        f"Delete all files from <b>{product.name}</b> / <b>{plan.name}</b>?\n\n"
+        f"Current files: <b>{len(plan.delivery_items or [])}</b>\n"
+        "Product and plan will remain, only delivery files will be removed.",
+        reply_markup=builder.as_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(ConfirmClearPlanFilesCD.filter(), ProductAdminFilter())
+async def cb_confirm_clear_plan_files(callback: CallbackQuery, callback_data: ConfirmClearPlanFilesCD):
+    product = await get_product(callback_data.product_id)
+    plan = next((item for item in product.plans if item.id == callback_data.plan_id), None) if product else None
+    if not product or not plan:
+        await callback.answer("Plan not found.", show_alert=True)
+        return
+
+    old_count = len(plan.delivery_items or [])
+    cleared = await clear_plan_delivery_items(plan.id)
+    if not cleared:
+        await callback.answer("Files not cleared.", show_alert=True)
+        return
+
+    await log_action(callback.from_user.id, "clear_plan_files", str(plan.id), f"{old_count} file(s)")
+    product = await get_product(product.id)
+    await callback.message.edit_text(
+        f"Deleted <b>{old_count}</b> file(s) from <b>{plan.name}</b>.",
+        reply_markup=admin_product_actions_with_plans_kb(product) if product else back_to_admin_kb(),
+    )
+    await callback.answer("Files deleted.")
+
+
 @router.callback_query(F.data == "admin_add_product", ProductAdminFilter())
 async def cb_add_product_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AddProductStates.name)
@@ -380,46 +513,51 @@ async def step_plan_price(message: Message, state: FSMContext):
 
     await state.update_data(current_plan_price=price, current_plan_files=[])
     await state.set_state(AddProductStates.plan_file_count)
-    await message.answer("How many auto-delivery files/messages for this plan? Enter 1 to 20:")
+    await message.answer("How many auto-delivery files/messages for this plan? Enter 1 to 500:")
 
 
 @router.message(AddProductStates.plan_file_count, ProductAdminFilter())
 async def step_plan_file_count(message: Message, state: FSMContext):
     try:
         count = int(message.text.strip())
-        assert 1 <= count <= 20
+        assert 1 <= count <= 500
     except (ValueError, AssertionError):
-        await message.answer("Please enter a valid number between 1 and 20.")
+        await message.answer("Please enter a valid number between 1 and 500.")
         return
 
     await state.update_data(current_plan_file_count=count, current_plan_files=[])
     await state.set_state(AddProductStates.plan_file)
     await message.answer(
         "Send delivery file/message 1 now.\n"
+        "If you upload in bulk, do it in multiple albums/files and keep sending till count is reached.\n"
         "Document, video, photo, audio, text, or any copyable Telegram message is supported."
     )
 
 
 @router.message(AddProductStates.plan_file, ProductAdminFilter())
 async def step_plan_file(message: Message, state: FSMContext):
-    data = await state.get_data()
-    files = list(data.get("current_plan_files") or [])
-    files.append(_delivery_item_from_message(message))
+    async with _upload_locks[message.from_user.id]:
+        data = await state.get_data()
+        files = list(data.get("current_plan_files") or [])
+        files.append(_delivery_item_from_message(message))
 
-    file_count = int(data.get("current_plan_file_count") or 1)
-    if len(files) < file_count:
-        await state.update_data(current_plan_files=files)
-        await message.answer(f"Saved. Send delivery file/message {len(files) + 1}:")
-        return
+        file_count = int(data.get("current_plan_file_count") or 1)
+        if len(files) < file_count:
+            await state.update_data(current_plan_files=files)
+            if len(files) == 1 or len(files) % 10 == 0:
+                await message.answer(
+                    f"Saved {len(files)}/{file_count}. Send delivery file/message {len(files) + 1}:"
+                )
+            return
 
-    plans = data.get("plans", [])
-    plans.append({
-        "name": data["current_plan_name"],
-        "price": data["current_plan_price"],
-        "delivery_items": files,
-    })
-    plans_added = data["plans_added"] + 1
-    await state.update_data(plans=plans, plans_added=plans_added, current_plan_files=[])
+        plans = data.get("plans", [])
+        plans.append({
+            "name": data["current_plan_name"],
+            "price": data["current_plan_price"],
+            "delivery_items": files,
+        })
+        plans_added = data["plans_added"] + 1
+        await state.update_data(plans=plans, plans_added=plans_added, current_plan_files=[])
 
     if plans_added < data["plan_count"]:
         await state.set_state(AddProductStates.plan_name)
@@ -485,42 +623,49 @@ async def add_plan_price(message: Message, state: FSMContext):
 
     await state.update_data(plan_price=price, plan_files=[])
     await state.set_state(AddPlanStates.plan_file_count)
-    await message.answer("How many auto-delivery files/messages for this plan? Enter 1 to 20:")
+    await message.answer("How many auto-delivery files/messages for this plan? Enter 1 to 500:")
 
 
 @router.message(AddPlanStates.plan_file_count, ProductAdminFilter())
 async def add_plan_file_count(message: Message, state: FSMContext):
     try:
         count = int(message.text.strip())
-        assert 1 <= count <= 20
+        assert 1 <= count <= 500
     except (ValueError, AssertionError):
-        await message.answer("Please enter a valid number between 1 and 20.")
+        await message.answer("Please enter a valid number between 1 and 500.")
         return
 
     await state.update_data(plan_file_count=count, plan_files=[])
     await state.set_state(AddPlanStates.plan_file)
-    await message.answer("Send delivery file/message 1 now:")
+    await message.answer(
+        "Send delivery file/message 1 now.\n"
+        "If you upload in bulk, do it in multiple albums/files and keep sending till count is reached."
+    )
 
 
 @router.message(AddPlanStates.plan_file, ProductAdminFilter())
 async def add_plan_file(message: Message, state: FSMContext):
-    data = await state.get_data()
-    files = list(data.get("plan_files") or [])
-    files.append(_delivery_item_from_message(message))
+    async with _upload_locks[message.from_user.id]:
+        data = await state.get_data()
+        files = list(data.get("plan_files") or [])
+        files.append(_delivery_item_from_message(message))
 
-    file_count = int(data.get("plan_file_count") or 1)
-    if len(files) < file_count:
-        await state.update_data(plan_files=files)
-        await message.answer(f"Saved. Send delivery file/message {len(files) + 1}:")
-        return
+        file_count = int(data.get("plan_file_count") or 1)
+        if len(files) < file_count:
+            await state.update_data(plan_files=files)
+            if len(files) == 1 or len(files) % 10 == 0:
+                await message.answer(
+                    f"Saved {len(files)}/{file_count}. Send delivery file/message {len(files) + 1}:"
+                )
+            return
 
-    await add_plan(data["product_id"], data["plan_name"], data["plan_price"], files)
-    await log_action(message.from_user.id, "add_plan", str(data["product_id"]))
-    await state.clear()
-    await message.answer(
-        f"Plan <b>{data['plan_name']}</b> added with {len(files)} auto-delivery file(s).",
-        reply_markup=back_to_admin_kb(),
-    )
+        await add_plan(data["product_id"], data["plan_name"], data["plan_price"], files)
+        await log_action(message.from_user.id, "add_plan", str(data["product_id"]))
+        await state.clear()
+        await message.answer(
+            f"Plan <b>{data['plan_name']}</b> added with {len(files)} auto-delivery file(s).",
+            reply_markup=back_to_admin_kb(),
+        )
 
 
 @router.callback_query(AdminDeleteProductCD.filter(), ProductAdminFilter())

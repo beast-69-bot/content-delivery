@@ -520,6 +520,30 @@ async def update_plan_price(plan_id: int, price: float) -> bool:
     return result.matched_count > 0
 
 
+async def append_delivery_items_to_plan(plan_id: int, delivery_items: list[dict]) -> Plan | None:
+    if not delivery_items:
+        return None
+
+    db = get_db()
+    result = await db.plans.update_one(
+        {"_id": int(plan_id), "is_active": True},
+        {"$push": {"delivery_items": {"$each": delivery_items}}},
+    )
+    _cache_clear()
+    if not result.matched_count:
+        return None
+    return _plan_from_doc(await db.plans.find_one({"_id": int(plan_id)}))
+
+
+async def clear_plan_delivery_items(plan_id: int) -> bool:
+    result = await get_db().plans.update_one(
+        {"_id": int(plan_id), "is_active": True},
+        {"$set": {"delivery_items": []}},
+    )
+    _cache_clear()
+    return result.matched_count > 0
+
+
 async def append_delivery_items_to_product(product_id: int, delivery_items: list[dict]) -> Plan | None:
     if not delivery_items:
         return None

@@ -41,6 +41,8 @@ class EditProductStates(StatesGroup):
     choosing_field = State()
     new_value      = State()
     plan_price     = State()
+    plan_file_count = State()
+    plan_file = State()
 
 
 class AddPlanStates(StatesGroup):
