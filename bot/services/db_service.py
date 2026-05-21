@@ -21,6 +21,8 @@ from utils.order_id import generate_order_id
 logger = logging.getLogger(__name__)
 
 _CACHE_TTL_SECONDS = 10.0
+_USER_TOUCH_TTL_SECONDS = 60.0
+_ADMIN_CACHE_TTL_SECONDS = 30.0
 _cache: dict[str, tuple[float, Any]] = {}
 
 
@@ -35,8 +37,8 @@ def _cache_get(key: str):
     return value
 
 
-def _cache_set(key: str, value):
-    _cache[key] = (monotonic() + _CACHE_TTL_SECONDS, value)
+def _cache_set(key: str, value, ttl: float = _CACHE_TTL_SECONDS):
+    _cache[key] = (monotonic() + ttl, value)
     return value
 
 
@@ -244,6 +246,11 @@ async def _hydrate_order(order: Order | None, include_user: bool = False, includ
 
 
 async def upsert_user(user_id: int, username: Optional[str], full_name: str) -> User:
+    cache_key = f"user_touch:{user_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     db = get_db()
     now = _utc_now_naive()
     await db.users.update_one(
@@ -269,11 +276,14 @@ async def upsert_user(user_id: int, username: Optional[str], full_name: str) -> 
     user = await get_user(user_id)
     if not user:
         raise RuntimeError(f"Failed to upsert user {user_id}")
-    return user
+    return _cache_set(cache_key, user, ttl=_USER_TOUCH_TTL_SECONDS)
 
 
 async def get_user(user_id: int) -> Optional[User]:
-    return _user_from_doc(await get_db().users.find_one({"_id": user_id}))
+    cached = _cache_get(f"user:{user_id}")
+    if cached is not None:
+        return cached
+    return _cache_set(f"user:{user_id}", _user_from_doc(await get_db().users.find_one({"_id": user_id})))
 
 
 async def get_all_users() -> list[User]:
@@ -292,6 +302,8 @@ async def toggle_user_ban(user_id: int) -> bool:
         return False
     new_state = not user.is_banned
     await get_db().users.update_one({"_id": user_id}, {"$set": {"is_banned": new_state}})
+    _cache_clear(f"user:{user_id}")
+    _cache_clear(f"user_touch:{user_id}")
     return new_state
 
 
@@ -318,6 +330,8 @@ async def add_premium_user(user_id: int, added_by: int, days: int | None = None)
         },
         upsert=True,
     )
+    _cache_clear(f"user:{user_id}")
+    _cache_clear(f"user_touch:{user_id}")
     user = await get_user(user_id)
     if not user:
         raise RuntimeError(f"Failed to add premium user {user_id}")
@@ -325,7 +339,14 @@ async def add_premium_user(user_id: int, added_by: int, days: int | None = None)
 
 
 async def get_admin(user_id: int) -> Optional[Admin]:
-    return _admin_from_doc(await get_db().admins.find_one({"_id": user_id, "is_active": True}))
+    cached = _cache_get(f"admin:{user_id}")
+    if cached is not None:
+        return cached
+    return _cache_set(
+        f"admin:{user_id}",
+        _admin_from_doc(await get_db().admins.find_one({"_id": user_id, "is_active": True})),
+        ttl=_ADMIN_CACHE_TTL_SECONDS,
+    )
 
 
 async def get_all_admins() -> list[Admin]:
@@ -343,6 +364,8 @@ async def add_admin(user_id: int, username: Optional[str], role: AdminRole, adde
         },
         upsert=True,
     )
+    _cache_clear(f"admin:{user_id}")
+    _cache_clear("admins_by_role:")
     admin = await get_admin(user_id)
     if not admin:
         raise RuntimeError(f"Failed to add admin {user_id}")
@@ -354,12 +377,22 @@ async def remove_admin(user_id: int) -> bool:
     if not admin or admin.role == AdminRole.owner:
         return False
     result = await get_db().admins.update_one({"_id": user_id}, {"$set": {"is_active": False}})
+    _cache_clear(f"admin:{user_id}")
+    _cache_clear("admins_by_role:")
     return result.modified_count > 0
 
 
 async def get_admins_by_role(*roles: AdminRole) -> list[Admin]:
+    role_key = ",".join(sorted(str(_enum_value(role)) for role in roles))
+    cached = _cache_get(f"admins_by_role:{role_key}")
+    if cached is not None:
+        return cached
     docs = await get_db().admins.find({"role": {"$in": [_enum_value(role) for role in roles]}, "is_active": True}).to_list(length=None)
-    return [_admin_from_doc(doc) for doc in docs if doc]
+    return _cache_set(
+        f"admins_by_role:{role_key}",
+        [_admin_from_doc(doc) for doc in docs if doc],
+        ttl=_ADMIN_CACHE_TTL_SECONDS,
+    )
 
 
 async def get_products_page(page: int = 0) -> tuple[list[Product], int]:

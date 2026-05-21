@@ -29,7 +29,12 @@ async def init_db() -> None:
     if _client is not None and _db is not None:
         return
 
-    _client = AsyncIOMotorClient(settings.MONGODB_URL)
+    _client = AsyncIOMotorClient(
+        settings.MONGODB_URL,
+        maxPoolSize=50,
+        minPoolSize=1,
+        serverSelectionTimeoutMS=5000,
+    )
     _db = _client[settings.MONGODB_DB_NAME]
     await _db.command("ping")
 
@@ -55,10 +60,13 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.plans.create_index([("product_id", ASCENDING), ("is_active", ASCENDING), ("sort_order", ASCENDING), ("_id", ASCENDING)])
     await db.orders.create_index("order_id", unique=True)
     await db.orders.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
+    await db.orders.create_index([("user_id", ASCENDING), ("status", ASCENDING)])
     await db.orders.create_index([("status", ASCENDING), ("created_at", ASCENDING)])
     await db.orders.create_index([("status", ASCENDING), ("expires_at", ASCENDING)])
     await db.delivery_messages.create_index([("deleted", ASCENDING), ("delete_after", ASCENDING)])
     await db.delivery_messages.create_index([("order_id", ASCENDING)])
+    await db.payment_admin_messages.create_index([("order_id", ASCENDING)])
+    await db.order_flow_messages.create_index([("order_id", ASCENDING)])
     await db.audit_logs.create_index([("admin_id", ASCENDING), ("created_at", DESCENDING)])
 
 
