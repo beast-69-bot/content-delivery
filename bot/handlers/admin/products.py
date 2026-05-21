@@ -47,6 +47,53 @@ router = Router()
 _upload_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
+async def _track_prompt(state: FSMContext, sent: Message) -> None:
+    data = await state.get_data()
+    ids = list(data.get("cleanup_message_ids") or [])
+    ids.append(sent.message_id)
+    await state.update_data(cleanup_message_ids=ids)
+
+
+async def _answer_tracked(message: Message, state: FSMContext, text: str, **kwargs) -> Message:
+    sent = await message.answer(text, **kwargs)
+    await _track_prompt(state, sent)
+    return sent
+
+
+async def _callback_answer_tracked(callback: CallbackQuery, state: FSMContext, text: str, **kwargs) -> Message:
+    sent = await callback.message.answer(text, **kwargs)
+    await _track_prompt(state, sent)
+    return sent
+
+
+async def _cleanup_flow_messages(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    ids = list(data.get("cleanup_message_ids") or [])
+    ids.append(message.message_id)
+    seen: set[int] = set()
+    for message_id in ids:
+        if not message_id or message_id in seen:
+            continue
+        seen.add(message_id)
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=message_id)
+        except Exception:
+            pass
+
+
+async def _cleanup_tracked_prompts(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    seen: set[int] = set()
+    for message_id in list(data.get("cleanup_message_ids") or []):
+        if not message_id or message_id in seen:
+            continue
+        seen.add(message_id)
+        try:
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=message_id)
+        except Exception:
+            pass
+
+
 def _valid_preview_url(text: str) -> bool:
     parsed = urlparse(text)
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
@@ -143,8 +190,10 @@ async def cb_edit_plan_price(callback: CallbackQuery, callback_data: AdminEditPl
         return
 
     await state.set_state(EditProductStates.plan_price)
-    await state.update_data(edit_product_id=product.id, edit_plan_id=plan.id)
-    await callback.message.answer(
+    await state.update_data(edit_product_id=product.id, edit_plan_id=plan.id, cleanup_message_ids=[])
+    await _callback_answer_tracked(
+        callback,
+        state,
         f"Send new price for <b>{product.name}</b> / <b>{plan.name}</b>.\n\n"
         f"Current price: <b>Rs {plan.price:.0f}</b>"
     )
@@ -203,8 +252,8 @@ async def cb_choose_edit_field(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.set_state(EditProductStates.new_value)
-    await state.update_data(edit_field=field)
-    await callback.message.answer(f"Send the {labels[field]} for <b>{product.name}</b>:")
+    await state.update_data(edit_field=field, cleanup_message_ids=[])
+    await _callback_answer_tracked(callback, state, f"Send the {labels[field]} for <b>{product.name}</b>:")
     await callback.answer()
 
 
@@ -222,14 +271,15 @@ async def step_edit_product_value(message: Message, state: FSMContext):
     if field in {"requirements_text", "preview_url"} and message.text == "/skip":
         value = ""
     if field == "preview_url" and value and not _valid_preview_url(value):
-        await message.answer("Send a valid http/https preview link, or /skip to clear.")
+        await _answer_tracked(message, state, "Send a valid http/https preview link, or /skip to clear.")
         return
     if not value and field not in {"requirements_text", "preview_url"}:
-        await message.answer("Value cannot be empty. Please send a valid value.")
+        await _answer_tracked(message, state, "Value cannot be empty. Please send a valid value.")
         return
 
     await update_product(product_id, **{field: value})
     await log_action(message.from_user.id, "edit_product", str(product_id), field)
+    await _cleanup_flow_messages(message, state)
     await state.clear()
     await message.answer("Content updated successfully.", reply_markup=admin_product_actions_kb(product_id))
 
@@ -249,17 +299,19 @@ async def step_edit_plan_price(message: Message, state: FSMContext):
         if not (0 < price <= 99999):
             raise ValueError
     except ValueError:
-        await message.answer("Please send a valid positive price up to Rs 99999.")
+        await _answer_tracked(message, state, "Please send a valid positive price up to Rs 99999.")
         return
 
     updated = await update_plan_price(int(plan_id), price)
-    await state.clear()
     if not updated:
+        await state.clear()
         await message.answer("Plan not found or price not updated.", reply_markup=back_to_admin_kb())
         return
 
     await log_action(message.from_user.id, "edit_plan_price", str(plan_id), f"Rs {price:.0f}")
     product = await get_product(int(product_id))
+    await _cleanup_flow_messages(message, state)
+    await state.clear()
     await message.answer(
         f"Plan price updated to <b>Rs {price:.0f}</b>.",
         reply_markup=admin_product_actions_with_plans_kb(product) if product else back_to_admin_kb(),
@@ -280,8 +332,11 @@ async def cb_add_plan_files(callback: CallbackQuery, callback_data: AdminAddPlan
         edit_plan_id=plan.id,
         edit_plan_name=plan.name,
         edit_plan_files=[],
+        cleanup_message_ids=[],
     )
-    await callback.message.answer(
+    await _callback_answer_tracked(
+        callback,
+        state,
         f"How many files/messages do you want to add to <b>{product.name}</b> / <b>{plan.name}</b>?\n\n"
         f"Current files: <b>{len(plan.delivery_items or [])}</b>\n"
         "Enter 1 to 500:"
@@ -295,12 +350,15 @@ async def step_edit_plan_file_count(message: Message, state: FSMContext):
         count = int(message.text.strip())
         assert 1 <= count <= 500
     except (ValueError, AssertionError):
-        await message.answer("Please enter a valid number between 1 and 500.")
+        await _answer_tracked(message, state, "Please enter a valid number between 1 and 500.")
         return
 
     await state.update_data(edit_plan_file_count=count, edit_plan_files=[])
     await state.set_state(EditProductStates.plan_file)
-    await message.answer(
+    await _cleanup_flow_messages(message, state)
+    await _answer_tracked(
+        message,
+        state,
         "Send delivery file/message 1 now.\n"
         "Document, video, photo, audio, text, or any copyable Telegram message is supported."
     )
@@ -326,6 +384,7 @@ async def step_edit_plan_file(message: Message, state: FSMContext):
         plan_id = int(data["edit_plan_id"])
         plan_name = data.get("edit_plan_name", "plan")
         plan = await append_delivery_items_to_plan(plan_id, files)
+        await _cleanup_tracked_prompts(message, state)
         await state.clear()
 
     if not plan:
