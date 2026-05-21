@@ -193,8 +193,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     builder.button(text="🗂 Categories", callback_data=BrowseCategoriesCD(page=0).pack())
     builder.button(text="👤 My Profile", callback_data="my_profile")
     builder.button(text="🧾 My Orders", callback_data="my_orders")
-    builder.button(text="💬 Support", callback_data="support")
-    builder.adjust(2, 2)
+    builder.adjust(1, 2)
     return builder.as_markup()
 
 

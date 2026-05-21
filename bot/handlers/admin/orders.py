@@ -412,10 +412,6 @@ async def cb_all_order_info(callback: CallbackQuery, callback_data: AdminOrderIn
 
     builder = InlineKeyboardBuilder()
     builder.button(
-        text="Message User",
-        callback_data=AdminMessageUserCD(order_id=order.order_id, page=callback_data.page).pack(),
-    )
-    builder.button(
         text="Back to All Orders",
         callback_data=AdminAllOrdersPageCD(page=callback_data.page).pack(),
     )
@@ -428,27 +424,8 @@ async def cb_all_order_info(callback: CallbackQuery, callback_data: AdminOrderIn
 
 @router.callback_query(AdminMessageUserCD.filter(), OwnerOrSuperFilter())
 async def cb_message_user(callback: CallbackQuery, callback_data: AdminMessageUserCD, state: FSMContext):
-    order = await get_order(callback_data.order_id)
-    if not order:
-        await callback.answer("Order not found.", show_alert=True)
-        return
-
-    await state.set_state(ContactUserStates.waiting_message)
-    await state.update_data(
-        contact_user_id=order.user_id,
-        contact_order_id=order.order_id,
-        contact_page=callback_data.page,
-        contact_intro_sent=False,
-    )
-    await callback.message.answer(
-        f"<b>Message Mode Enabled</b>\n\n"
-        f"Order: <b>#{order.order_id}</b>\n"
-        f"User ID: <code>{order.user_id}</code>\n\n"
-        "Any text/file/photo/video you send now will be forwarded to this user.\n"
-        "Use /done or Stop Messaging to close this mode.",
-        reply_markup=_contact_user_nav_kb(order.order_id, callback_data.page, with_stop=True),
-    )
-    await callback.answer()
+    await state.clear()
+    await callback.answer("Direct user messaging is disabled.", show_alert=True)
 
 
 @router.callback_query(AdminStopMessageUserCD.filter(), OwnerOrSuperFilter())
@@ -465,6 +442,10 @@ async def cb_stop_message_user(callback: CallbackQuery, callback_data: AdminStop
 
 @router.message(ContactUserStates.waiting_message, OwnerOrSuperFilter())
 async def handle_message_user(message: Message, state: FSMContext, bot: Bot):
+    await state.clear()
+    await message.answer("Direct user messaging is disabled.")
+    return
+
     data = await state.get_data()
     user_id = data.get("contact_user_id")
     order_id = data.get("contact_order_id")
