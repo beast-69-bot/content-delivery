@@ -626,7 +626,7 @@ async def cb_upload_screenshot(callback: CallbackQuery, callback_data: UploadScr
     await _ack(callback)
 
 
-@router.message(PaymentStates.waiting_screenshot, F.photo)
+@router.message(PaymentStates.waiting_screenshot, F.photo | F.document)
 async def handle_screenshot(message: Message, state: FSMContext, bot: Bot) -> None:
     data = await state.get_data()
     order_id = data.get("order_id")
@@ -645,9 +645,10 @@ async def handle_screenshot(message: Message, state: FSMContext, bot: Bot) -> No
             )
             return
 
-        # Save screenshot file_id
-        file_id = message.photo[-1].file_id
-        await submit_screenshot(order_id, file_id)
+        # Save proof file_id. Some users send screenshots as files/documents.
+        file_id = message.photo[-1].file_id if message.photo else message.document.file_id
+        proof_type = "photo" if message.photo else "document"
+        await submit_screenshot(order_id, file_id, proof_type)
         await add_order_flow_message(order_id, message.chat.id, message.message_id)
     except Exception as e:
         logger.error(f"Error submitting screenshot: {e}")
@@ -665,11 +666,12 @@ async def handle_screenshot(message: Message, state: FSMContext, bot: Bot) -> No
     await add_order_flow_message(order_id, message.chat.id, received_message.message_id)
     await sync_order_feed(bot, order_id)
 
-    # Notify payment admins
-    await _notify_payment_admins(bot, order, file_id)
+    sent_count = await _notify_payment_admins(bot, order, file_id, proof_type)
+    if sent_count == 0:
+        logger.error("Payment proof for order %s was saved but no payment admin was notified", order_id)
 
 
-async def _notify_payment_admins(bot: Bot, order: Order, file_id: str) -> None:
+async def _notify_payment_admins(bot: Bot, order: Order, file_id: str, proof_type: str = "photo") -> int:
     """Forward screenshot + approve/reject buttons to all payment admins."""
     from keyboards.keyboards import payment_verify_kb
 
@@ -677,12 +679,21 @@ async def _notify_payment_admins(bot: Bot, order: Order, file_id: str) -> None:
         admins = await get_admins_by_role(AdminRole.payment_admin, AdminRole.super_admin, AdminRole.owner)
     except Exception as e:
         logger.error(f"Error getting admins for notification: {e}")
-        return
+        admins = []
 
-    username = order.user.username or order.user.full_name
+    recipient_ids: list[int] = []
+    for admin in admins:
+        if admin.id not in recipient_ids:
+            recipient_ids.append(admin.id)
+    if settings.OWNER_ID not in recipient_ids:
+        recipient_ids.append(settings.OWNER_ID)
+
+    user = order.user
+    username = (user.username or user.full_name) if user else str(order.user_id)
+    user_label = f"@{username}" if user and user.username else username
     text = (
         f"💳 <b>Payment Verification</b>\n\n"
-        f"👤 User:     @{username} (<code>{order.user_id}</code>)\n"
+        f"👤 User:     {user_label} (<code>{order.user_id}</code>)\n"
         f"🆔 Order:    <b>#{order.order_id}</b>\n"
         f"📦 Product:  {order.product_name}\n"
         f"📋 Plan:     {order.plan_name}\n"
@@ -690,17 +701,28 @@ async def _notify_payment_admins(bot: Bot, order: Order, file_id: str) -> None:
     )
     kb = payment_verify_kb(order.order_id)
 
-    for admin in admins:
+    sent_count = 0
+    for admin_id in recipient_ids:
         try:
-            sent = await bot.send_photo(
-                chat_id=admin.id,
-                photo=file_id,
-                caption=text,
-                reply_markup=kb,
-            )
-            await add_payment_admin_message(order.order_id, admin.id, sent.message_id, "photo")
+            if proof_type == "document":
+                sent = await bot.send_document(
+                    chat_id=admin_id,
+                    document=file_id,
+                    caption=text,
+                    reply_markup=kb,
+                )
+            else:
+                sent = await bot.send_photo(
+                    chat_id=admin_id,
+                    photo=file_id,
+                    caption=text,
+                    reply_markup=kb,
+                )
+            await add_payment_admin_message(order.order_id, admin_id, sent.message_id, proof_type)
+            sent_count += 1
         except Exception as e:
-            logger.warning(f"Could not notify admin {admin.id}: {e}")
+            logger.warning(f"Could not notify payment admin {admin_id}: {e}")
+    return sent_count
 
 
 async def _notify_xwallet_auto_verified(bot: Bot, order: Order, qr_code_id: str) -> None:

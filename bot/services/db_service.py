@@ -150,6 +150,7 @@ def _order_from_doc(doc: dict | None) -> Optional[Order]:
         redelivery_of=doc.get("redelivery_of"),
         status=_as_order_status(doc.get("status")),
         screenshot_file_id=doc.get("screenshot_file_id"),
+        screenshot_file_type=doc.get("screenshot_file_type", "photo"),
         requirements_text_snapshot=doc.get("requirements_text_snapshot"),
         customer_requirements_response=doc.get("customer_requirements_response"),
         customer_bot_token=doc.get("customer_bot_token"),
@@ -680,9 +681,14 @@ async def update_order_status(order_id: str, status: OrderStatus, **kwargs) -> b
     return result.matched_count > 0
 
 
-async def submit_screenshot(order_id: str, file_id: str) -> bool:
+async def submit_screenshot(order_id: str, file_id: str, file_type: str = "photo") -> bool:
     await get_db().payment_admin_messages.delete_many({"order_id": order_id})
-    return await update_order_status(order_id, OrderStatus.submitted, screenshot_file_id=file_id)
+    return await update_order_status(
+        order_id,
+        OrderStatus.submitted,
+        screenshot_file_id=file_id,
+        screenshot_file_type=file_type,
+    )
 
 
 async def approve_payment(order_id: str, admin_id: int) -> bool:

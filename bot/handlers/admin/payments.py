@@ -73,7 +73,7 @@ async def _edit_payment_admin_messages(bot: Bot, order, text: str) -> None:
     messages = await get_payment_admin_messages(order.order_id)
     for item in messages:
         try:
-            if item.get("message_type") == "photo":
+            if item.get("message_type") in {"photo", "document"}:
                 await bot.edit_message_caption(
                     chat_id=item["chat_id"],
                     message_id=item["message_id"],
@@ -141,13 +141,31 @@ async def cb_view_payment(callback: CallbackQuery, callback_data: ViewPaymentCD,
     kb = payment_verify_kb(order.order_id)
 
     if order.screenshot_file_id:
-        sent = await bot.send_photo(
-            chat_id=callback.from_user.id,
-            photo=order.screenshot_file_id,
-            caption=text,
-            reply_markup=kb,
-        )
-        await add_payment_admin_message(order.order_id, callback.from_user.id, sent.message_id, "photo")
+        proof_type = getattr(order, "screenshot_file_type", "photo")
+        if proof_type == "document":
+            sent = await bot.send_document(
+                chat_id=callback.from_user.id,
+                document=order.screenshot_file_id,
+                caption=text,
+                reply_markup=kb,
+            )
+        else:
+            try:
+                sent = await bot.send_photo(
+                    chat_id=callback.from_user.id,
+                    photo=order.screenshot_file_id,
+                    caption=text,
+                    reply_markup=kb,
+                )
+            except Exception:
+                proof_type = "document"
+                sent = await bot.send_document(
+                    chat_id=callback.from_user.id,
+                    document=order.screenshot_file_id,
+                    caption=text,
+                    reply_markup=kb,
+                )
+        await add_payment_admin_message(order.order_id, callback.from_user.id, sent.message_id, proof_type)
     else:
         await callback.message.edit_text(text, reply_markup=kb)
         await add_payment_admin_message(order.order_id, callback.from_user.id, callback.message.message_id, "text")

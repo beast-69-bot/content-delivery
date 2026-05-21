@@ -106,6 +106,7 @@ class Order:
     redelivery_of: Optional[str] = None
     status: OrderStatus = OrderStatus.pending
     screenshot_file_id: Optional[str] = None
+    screenshot_file_type: str = "photo"
     requirements_text_snapshot: Optional[str] = None
     customer_requirements_response: Optional[str] = None
     customer_bot_token: Optional[str] = None
